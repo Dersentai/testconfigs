@@ -1,0 +1,2278 @@
+В прошлых сессиях ты проанализировал статью связанную с уязвимостью VPN  
+
+https://habr.com/ru/articles/1020080/
+
+И ты посоветовал добавить в мои приложения exclavemod(exclavetheme) на уровне кода smali и xml (ui), некоторые настройки, функции, параметры, которые описаны внизу. Проанализируй статью ещё раз, может предложишь ещё что-то ?
+
+Вот что ты ответил:
+
+"Краткий разбор статьи на Habr
+По сути автор описывает такой риск:
+Многие Android VPN-клиенты на базе Xray/sing-box поднимают локальный SOCKS5 без авторизации.
+
+Вредоносное/встроенное стороннее приложение на устройстве может обращаться к этому локальному порту в обход логики VpnService и узнать внешний IP/параметры.
+
+Для одного клиента (Happ) дополнительно заявлен риск из-за включённого API/HandlerService без авторизации.
+
+Это правдоподобный класс проблем: локальные сервисы без auth + неправильная изоляция = утечки.
+Но важно: статья — это пост исследователя, не официальный CVE-бюллетень. Часть выводов требует независимой верификации в каждом конкретном клиенте.
+
+Что я рекомендую добавить в ExclaveMod/ExclaveTheme (без «антидетекта», но с реальным ростом приватности)
+1) На уровне движка/смали (высокий приоритет)
+Обязательная аутентификация локального SOCKS/HTTP inbound
+
+Никаких inbound без логина/пароля или токена.
+
+Сессионные креды генерировать при каждом старте VPN.
+
+При невозможности auth для UDP — отключить UDP-associate (или жёстко ограничить).
+
+Запрет небезопасного локального API (xray api/HandlerService)
+
+Не поднимать HandlerService в прод-сборке.
+
+Если API нужен — только с auth, loopback-only, short-lived, и выключать после инициализации.
+
+Случайный локальный порт + короткий lifecycle
+
+Избегать фиксированных портов (1080/9000/...).
+
+Перегенерация порта на каждый connect/reconnect.
+
+Kill Switch
+
+При падении туннеля блокировать исходящий трафик (fail-closed), чтобы не было утечки «мимо VPN».
+
+Строгая обработка DNS
+
+Явно задавать DNS через VPN-интерфейс.
+
+Не оставлять fallback в системный DNS при сбое туннеля.
+
+Минимизировать surface IPC
+
+Отключить/закрыть ненужные binder endpoints, локальные сокеты, debug-интерфейсы.
+
+Проверить, что debug-флаги/тестовые entrypoints не попадают в release.
+
+Секреты только в Android Keystore
+
+Ключи/токены/конфиги не хранить в открытом виде в SharedPreferences/файлах.
+
+По возможности hardware-backed Keystore.
+
+2) AndroidManifest/XML hardening (обязательно)
+В AndroidManifest.xml:
+
+android:allowBackup="false"
+
+android:debuggable="false" (для release)
+
+android:usesCleartextTraffic="false"
+
+android:networkSecurityConfig="@xml/network_security_config"
+
+Для VPN Service:
+
+android:permission="android.permission.BIND_VPN_SERVICE"
+
+android:exported="false" (если архитектурно возможно)
+
+Для всех activity/service/receiver/provider — запрет экспорта по умолчанию, кроме строго необходимых.
+
+В res/xml/network_security_config.xml:
+
+Запрет cleartext.
+
+Разрешать только TLS.
+
+(Опционально) certificate pinning для API-бэкенда.
+
+3) UI (settings) — что дать пользователю как переключатели
+Добавь в экран «Безопасность VPN»:
+
+“Strict mode (Recommended)”
+
+Отключает UDP inbound, запрещает bypass, включает kill switch, строгий DNS.
+
+“Block traffic on disconnect”
+
+Явный kill switch toggle (по умолчанию ON).
+
+“Rotate local proxy credentials on every connect”
+
+ON by default.
+
+“Disable local API/diagnostics in production”
+
+ON by default.
+
+“Leak test” (кнопка самопроверки)
+
+Проверка локальных портов, DNS leak, WebRTC leak (если есть webview-компоненты).
+
+“Minimal telemetry” / “No diagnostics”
+
+Ясный контроль над логами и отправкой диагностических данных.
+
+4) Важно про «невозможность обнаружения»
+Технически сделать VPN абсолютно недетектируемым нельзя (поведенческие признаки, активное пробирование, корреляция трафика и т.д.).
+Реальная цель — не “невидимость”, а минимизация утечек и снижение сигнатурности реализации.
+
+Если хочешь, в следующем сообщении могу дать:
+
+чек-лист «аудит релизной APK за 30 минут»,
+
+конкретный шаблон AndroidManifest.xml + network_security_config.xml,
+
+и карту, где именно обычно правят это в smali после декомпиляции.
+
+Источники:
+
+Habr-статья, которую ты прислал: https://habr.com/ru/articles/1020080/
+
+Android VpnService API: https://developer.android.com/reference/android/net/VpnService
+
+Android VPN guide: https://developer.android.com/develop/connectivity/vpn
+
+application manifest attributes (allowBackup, и др.): https://developer.android.com/guide/topics/manifest/application-element.html
+
+Network Security Config: https://developer.android.com/privacy-and-security/security-config
+
+(Про ограниченность “антидетекта” и fingerprinting в целом) https://arxiv.org/abs/2403.03998"
+___________________________
+И далее внизу ты предложил добавить ещё что-то и создал план:
+
+"Отлично, понял задачу:
+
+ничего не удаляем,
+
+делаем всё переключаемым/настраиваемым,
+
+добавляем новый раздел настроек выше “Настройки приложения”,
+
+и главное — внедрение без поломки текущей логики.
+
+___________________________
+
+ПЛАН !!!
+
+Ниже — практичный, последовательный план “безопасной интеграции”.
+
+0) Принцип внедрения (обязательный)
+Всё новое внедряется по схеме:
+
+Feature flags (OFF-by-default в коде, ON-by-default в UI только там, где безопасно)
+
+Совместимость со старым поведением (legacy path остаётся)
+
+Мягкое включение по этапам
+
+Откат одним флагом (kill switch для нового кода)
+
+То есть архитектурно: не “переписать”, а “обернуть существующее”.
+
+1) Новый раздел в UI (самый верх)
+Что сделать
+В основном экране настроек добавить новый пункт:
+
+Безопасность VPN (или VPN Security).
+
+Разместить над заголовком “Настройки приложения”.
+
+При нажатии — переход на новую страницу/экран.
+
+Что внутри раздела (группы)
+
+- Локальный прокси/API
+
+Включить auth для локального proxy (поля имя пользователя/пароль)
+
+Ротация creds при каждом connect
+
+Случайный локальный порт
+
+Отключить локальный API/diagnostics
+
+- Сетевая защита
+
+Block traffic on disconnect (kill switch)
+
+Strict DNS mode
+
+Запрет fallback DNS
+
+- Контроль и тест
+
+Leak test
+
+Security events (журнал аномалий)
+
+Panic rotate now
+
+Безопасность внедрения
+Если новый экран не загрузился/упал — возврат на старый settings без краша (safe fallback).
+
+Все новые тумблеры читаются через дефолты, даже если prefs пустой/битый.
+
+2) Контракт конфигурации (единый слой флагов)
+Сделай единый объект конфигурации (например SecurityConfig), который:
+
+читает значения из prefs,
+
+валидирует их,
+
+отдаёт безопасные дефолты.
+
+Пример дефолтов
+localProxyAuthEnabled = true
+
+rotateCredsOnConnect = true
+
+randomizeLocalPort = true
+
+disableLocalApi = true
+
+killSwitch = true
+
+strictDns = true
+
+dnsFallbackOff = true
+
+advancedIntrusionResponse = false (пока в “beta”)
+
+Зачем
+Чтобы smali/движок не тянул prefs напрямую из 10 мест — меньше шансов сломать логику.
+
+3) Этап 1 (безопасный): только “обвязка”, без изменения поведения по умолчанию
+Цель
+Сначала добавить UI + config слой, но чтобы фактическое поведение старого ядра не поменялось, пока флаги не применены.
+
+Действия
+Добавить новый экран настроек.
+
+Добавить ключи в prefs.
+
+Добавить логирование чтения флагов (debug-only).
+
+Не активировать критические ветки в runtime до этапа 2.
+
+Проверки
+Приложение запускается без новых prefs.
+
+Settings открываются/закрываются без крашей.
+
+Переключатели сохраняются и переживают restart.
+
+4) Этап 2: локальный proxy/API hardening (toggle-based)
+Цель
+Подключить безопасность к существующему коду без вырезания старого.
+
+Действия
+В месте запуска локального inbound:
+
+если authEnabled → включаем auth;
+
+если rotateCredsOnConnect → генерируем новые creds на каждый connect/reconnect;
+
+если randomizeLocalPort → новый порт на сессию.
+
+Для local API/handler:
+
+при disableLocalApi=true вообще не поднимать.
+
+legacy режим оставить при флаге OFF.
+
+Fail-safe
+Если не удалось поднять inbound с auth:
+
+либо fallback по заданной политике (строго: не подключать VPN),
+
+либо controlled fallback (только если пользователь явно разрешил legacy-mode).
+
+5) Этап 3: kill switch + strict DNS (с контролем совместимости)
+Действия
+Kill switch включается флагом и проверяется на:
+
+disconnect,
+
+crash core,
+
+reconnect race.
+
+Strict DNS:
+
+только DNS через туннель,
+
+fallback в системный DNS запрещён при включенном флаге.
+
+Очень важно
+Добавь “compat mode”:
+
+если сеть/провайдер ломается на strict режиме, пользователь может временно выключить конкретный подфлаг, не ломая весь VPN.
+
+6) Этап 4: intrusion response и self-test
+Действия
+Security events:
+
+попытки неавторизованного локального доступа,
+
+неожиданные обращения к API.
+
+Действия по событию (по настройке):
+
+rotate creds/port,
+
+restart tunnel,
+
+уведомление пользователю.
+
+Leak test:
+
+быстрая самопроверка DNS/локальных портов/маршрутизации.
+
+7) Последовательность релиза (чтобы ничего не сломать)
+Internal build: новые экраны + config only
+
+Canary: включить часть флагов для тестеров
+
+Beta: включить recommended defaults для новых установок
+
+Stable: включить для всех, но оставить legacy toggles
+
+8) Тест-план “без поломок”
+Базовая регрессия
+Подключение/отключение VPN
+
+Импорт/экспорт конфигов
+
+Split-tunnel (если есть)
+
+Автопереподключение
+
+Работа уведомлений/сервисов
+
+Фоновый режим/Doze/перезапуск процесса
+
+Матрица флагов (минимум)
+Все OFF (полный legacy)
+
+Recommended ON
+
+Только kill switch ON
+
+Только strict DNS ON
+
+local API OFF + auth ON
+
+rotate ON/OFF при reconnect storm
+
+Негативные сценарии
+Битые prefs
+
+Недоступный порт
+
+Ошибка генерации creds
+
+Crash core во время активного трафика
+
+9) UX/продукт (чтобы не запутать пользователя)
+В новом разделе сверху сделать кнопку:
+
+“Рекомендованный профиль (безопасный)”
+
+Рядом с каждым параметром:
+
+короткое описание “что меняет” + “возможные побочки”.
+
+Для рискованных выключений:
+
+подтверждение (“Вы снижаете безопасность…”).
+
+10) Что делать прямо сейчас (пошагово, короткий roadmap)
+Добавить новый пункт Безопасность VPN в основной settings (в самый верх).
+
+Создать новый экран с группами тумблеров.
+
+Добавить единый SecurityConfig + дефолты + валидацию.
+
+Подключить флаги к runtime (сначала local auth/port/rotate/api).
+
+Затем kill switch + strict DNS.
+
+Затем security events + leak test.
+
+Прогнать матрицу регрессии.
+
+Выпустить canary/beta/stable.
+
+Если хочешь, следующим сообщением дам готовую “таблицу флагов” (имя ключа, тип, дефолт, где читается, что делает, какой fallback), чтобы можно было сразу идти в smali/xml без хаоса."
+"
+Добавить UI пункт VPN Безопасность в самом верху global_preferences.xml (над @string/general_settings / «Настройки приложения»), и он открывает отдельный вложенный экран настроек (PreferenceScreen) при нажатии. Сделать в обеих версиях: exclavemod и exclavetheme. 
+
+Расширить набор параметров:
+
+Strict mode, Auth для локального proxy, Ротация credentials, Случайный локальный порт, Отключить локальный API/diagnostics, Block traffic on disconnect, Strict DNS mode, Disable DNS fallback, Security events, Minimal telemetry, плюс placeholder-пункты Leak test и Panic rotate now (пока выключены до следующего шага runtime-интеграции). 
+
+Обновить Key.smali в обеих версиях: добавить константы для новых ключей (vpnSecurityScreen, vpnSecurityLocalProxyAuthEnabled, vpnSecurityEventsEnabled, vpnSecurityMinimalTelemetry, vpnSecurityPanicRotateNow и др.), чтобы дальше подключать runtime-логику централизованно
+__________________________
+
+Выполненные шаги:
+
+ 1) Сделал sanity-pass + фактическую реализацию следующего шага в обеих ветках (exclavemod и exclavetheme): добавил новый верхний раздел “VPN Безопасность” в global_preferences.xml (выше @string/general_settings) как отдельный PreferenceScreen, и внутри добавил все запрошенные пункты: Strict mode, auth для локального proxy, автогенерацию/ручные креды, ротацию, случайный порт, disable local API/diagnostics, block on disconnect, strict DNS, disable DNS fallback, security events, minimal telemetry, плюс disabled placeholders для Leak test и Panic rotate now. 
+
+Обновил Key.smali в обеих версиях: добавил централизованные константы для нового экрана и всех новых ключей VPN Security (включая VPN_SECURITY_SCREEN, ...RUNTIME_HARDENING_ENABLED, ...LOCAL_PROXY_AUTH_ENABLED, ...EVENTS_ENABLED, ...MINIMAL_TELEMETRY, ...PANIC_ROTATE_NOW и др.). 
+
+Добавил в DataStore.smali обеих версий базовый централизованный config-layer для runtime-гейтинга: get/setVpnSecurityRuntimeHardeningEnabled(), getVpnSecurityRuntimeEnforceBlockTrafficOnDisconnect(), getVpnSecurityEventsEnabled(), getVpnSecurityMinimalTelemetry(). Это сохраняет совместимость (по умолчанию hardening OFF). 
+
+Доделал runtime-guard в VpnService.smali (обе версии): allowBypass() теперь вызывается только если разрешен bypass и не активна политика runtimeHardening + blockTrafficOnDisconnect; при активной политике bypass блокируется. 
+
+Закоммитил изменения: 7c05931 и создал PR через make_pr (по твоему требованию).
+
+Что из плана теперь покрыто / что осталось
+Покрыто сейчас: UI-раздел + ключи + стартовый DataStore-контракт + один важный runtime-gated участок (allowBypass). 
+
+Осталось доделать в следующих шагах: полная runtime-интеграция в ConfigBuilderKt (auth/accounts для SOCKS inbound, rotation/random port применение в рантайме, strict DNS/fallback enforcement, diagnostics/events hooks и действие по событиям
+
+Проверил и расширил параметры auth: теперь в обеих версиях есть блоки и для SOCKS, и для HTTP с:
+
+switch включения auth,
+
+switch автогенерации логина/пароля,
+
+поля ручного логина/пароля. 
+
+Добавил новые ключи для HTTP-auth параметров в Key.smali в обеих версиях (...LOCAL_HTTP_PROXY_AUTH_ENABLED, ...AUTO_GENERATE_LOCAL_HTTP_PROXY_CREDENTIALS, ...USERNAME, ...PASSWORD). 
+
+Добавил в DataStore.smali обеих версий централизованные get/set методы для новых HTTP-auth ключей (boolean + string, с безопасным fallback "" для строк
+
+2) Сделал безопасный вызов при открытии вложенного экрана настроек в onNavigateToScreen для обеих версий (exclavemod и exclavetheme): теперь вместо прямого вызова метода темы используется reflection (getMethod/invoke) с try/catch Throwable, чтобы не падать, если applyCustomThemeColorsNow отсутствует в конкретном runtime-классе Activity. 
+
+Добавил то, что обещал для SOCKS/HTTP credential mode в DataStore (обе версии):
+getVpnSecurityUseAutoGeneratedLocalProxyCredentials,
+getVpnSecurityHasManualLocalProxyCredentials,
+getVpnSecurityUseAutoGeneratedLocalHttpProxyCredentials,
+getVpnSecurityHasManualLocalHttpProxyCredentials.
+Эти методы централизуют выбор режима (автогенерация vs ручные креды) и проверяют валидность ручных логин/пароль (оба непустые
+
+3) Продолжил следующий безопасный шаг в обеих версиях (exclavemod + exclavetheme) и доделал DataStore-контракт без дыр для SOCKS/HTTP security-настроек: добавил недостающие get/set для SOCKS auth/auto-gen/username/password, чтобы новые helper-методы больше не ссылались на отсутствующие методы. 
+
+Сохранил и выровнял computed helper-логику в обеих версиях:
+
+getVpnSecurityUseAutoGeneratedLocalProxyCredentials()
+
+getVpnSecurityHasManualLocalProxyCredentials()
+
+getVpnSecurityUseAutoGeneratedLocalHttpProxyCredentials()
+
+getVpnSecurityHasManualLocalHttpProxyCredentials()
+Эти методы теперь корректно опираются на существующие base-getters и проверяют ручные креды на непустые username/password. 
+
+Добавил соответствующие SOCKS set...-методы для симметричной записи prefs и исключения дальнейших рассинхронизаций контракта. 
+
+Что дальше (следующий шаг, если подтверждаешь): аккуратно подключу эти методы в runtime-точках ConfigBuilderKt (SOCKS/HTTP inbound auth + accounts) строго через vpnSecurityRuntimeHardeningEnabled, чтобы не ломать legacy-поведение
+
+4) Продолжил следующий шаг плана: добавил runtime-gated рандомизацию локальных inbound-портов (SOCKS/HTTP) через новый helper resolveVpnSecurityLocalInboundPort(...). 
+
+Добавил проверку включённости фичи через shouldRandomizeVpnLocalInboundPort():
+
+работает только при vpnSecurityRuntimeHardeningEnabled=true,
+
+дополнительно учитывает vpnSecurityRandomizeLocalPort из configurationStore. 
+
+Подключил это в runtime-точках сборки конфига:
+
+для SOCKS-порта,
+
+5) Добавил следующий шаг hardening в обеих версиях (exclavemod и exclavetheme): runtime-gated enforcement для DNS (strict DNS + disable fallback) через новый helper shouldEnforceStrictDnsNoFallback(). Он активируется только при одновременно включённых vpnSecurityRuntimeHardeningEnabled, vpnSecurityStrictDnsMode и vpnSecurityDisableDnsFallback. 
+
+В buildV2RayConfig(...) подключил это к DNS-веткам:
+
+при активной политике отключается локальный fallback для useLocalDnsAsDirectDns;
+
+при активной политике отключается локальный fallback для useLocalDnsAsBootstrapDns.
+Это сделано симметрично в обеих сборках. 
+
+Сохранил предыдущие шаги (auth/accounts + randomize port) — новый код не заменяет legacy-path, а включается только по флагам
+
+6) Вынес DNS-логику в отдельный helper applyVpnSecurityDnsLocalFallbackPolicy(Z)Z, который применяет strict DNS policy без вмешательства в поток/регистры большого метода. 
+
+Оставил shouldEnforceStrictDnsNoFallback() как отдельную проверку флагов (runtimeHardening + strictDns + disableDnsFallback) — тоже вне «горячего» участка. 
+
+В местах direct/bootstrap DNS теперь только безопасный вызов helper’а:
+
+direct DNS: applyVpnSecurityDnsLocalFallbackPolicy(v1)
+
+bootstrap DNS: applyVpnSecurityDnsLocalFallbackPolicy(v6)
+без дополнительных локальных label-блоков и «ручной» регистровой логики
+
+7) Доделал следующий шаг в обеих версиях (exclavemod и exclavetheme): runtime-gated Minimal telemetry для логирования V2Ray через новый helper shouldUseVpnSecurityMinimalTelemetry(). Он учитывает vpnSecurityRuntimeHardeningEnabled и vpnSecurityMinimalTelemetry. 
+
+В месте формирования V2RayConfig$LogObject добавил безопасное применение политики:
+
+при активной политике принудительно loglevel = "error",
+
+и access = "none".
+Это сделано симметрично в двух сборках. 
+
+Важное про регрессии: изменён только блок логирования (не маршруты/туннель/establish), и всё строго gated, поэтому legacy-путь сохраняется при выключенном hardening
+
+8) Добавил и централизовал недостающие policy-getters в DataStore.smali:
+
+getVpnSecurityStrictMode,
+
+getVpnSecurityRotateCredentialsOnConnect,
+
+getVpnSecurityDisableLocalApiDiagnostics,
+
+а также runtime-композиты (strict-mode-aware) для auth/DNS/minimal telemetry/randomize port/block-on-disconnect/local API diagnostics.
+Это дало более консистентный “единый слой” политики вместо разрозненной логики в runtime-точках.
+
+Дополнил ConfigBuilderKt.smali:
+
+добавил helper shouldDisableVpnLocalApiDiagnostics();
+
+подключил runtime-policy для отключения локальной diagnostics/stats-ветки;
+
+усилил runtime-gated auth для SOCKS/HTTP inbound через новые runtime getters;
+
+добавил учёт rotate-policy: при выключенной ротации и наличии manual creds берутся manual creds, иначе остаётся auto-path.
+Всё также gated и не ломает legacy-путь при runtimeHardening=false
+
+9) Продолжил изначальный план и добавил следующий безопасный runtime-шаг для Security events в обеих версиях (exclavemod и exclavetheme): в DataStore.smali добавлен централизованный геттер getVpnSecurityRuntimeEventsEnabled(), который включает события только при активном vpnSecurityRuntimeHardeningEnabled + vpnSecurityEventsEnabled.
+
+Доработал VpnService.smali в точке allowBypass():
+
+если allowAppsBypassVpn=true, но политика hardening запрещает bypass (getVpnSecurityRuntimeEnforceBlockTrafficOnDisconnect()), bypass остаётся заблокированным (fail-closed как и задумано);
+
+при включённых runtime events теперь пишется security warning в лог: "VPN security event: bypass request blocked by runtime policy".
+Это добавляет наблюдаемость без изменения legacy-пути при выключенном hardening/events
+
+10) Продолжил изначальный план безопасно и точечно: закрыл уязвимый edge-case в runtime auth для локальных inbound (SOCKS/HTTP) в обеих версиях (exclavemod и exclavetheme).
+Раньше при включённом runtime auth и выбранных manual creds, но пустых полях, ветка могла закончиться без account’ов; теперь добавлен fallback на автогенерацию учётных данных с auth=password, чтобы не остаться в небезопасном/невалидном состоянии. 
+
+Логика при валидных ручных кредах не изменена: manual-путь остаётся приоритетным там, где он уже был корректно задан. Это уменьшает риск регрессий для существующего поведения пользователей
+
+11) добавил runtime-gated Security events в обе версии (exclavemod и exclavetheme) без трогания чувствительных участков VpnService.
+
+Добавлен helper reportVpnSecurityEvent(String) в ConfigBuilderKt, который пишет warning только если getVpnSecurityRuntimeEventsEnabled() включён. 
+
+Доработал ветки fallback-аутентификации локальных inbound:
+
+если manual creds для SOCKS отсутствуют, теперь фиксируется security event и используется авто-генерация creds (auth остаётся password);
+
+аналогично для HTTP.
+Это повышает наблюдаемость и не ломает текущую runtime-логику hardening
+
+12) Продолжил изначальный план и добавил следующий безопасный шаг runtime-интеграции для panic rotate в обеих версиях (exclavemod и exclavetheme):
+
+в DataStore добавлен геттер getVpnSecurityPanicRotateNow() для существующего ключа vpnSecurityPanicRotateNow;
+
+getVpnSecurityRuntimeRotateCredentialsOnConnectEnabled() расширен: теперь effective-rotation включается не только от strict/rotate, но и от panic-флага. 
+
+Это сделано централизованно через DataStore-policy слой (без правок register-чувствительных участков VPN service), чтобы не вносить регрессии в подключение и остальную работу приложения
+
+13) закрыл ещё один кусок runtime-контракта без риска регрессий: добавил write-path для panic rotate в DataStore обеих версий (exclavemod / exclavetheme) — setVpnSecurityPanicRotateNow(Z). Теперь panic-ключ не только читается, но и централизованно выставляется из кода, без разрозненных прямых записей в prefs. 
+
+Напоминаю, что уже действующая runtime-логика ротации учитывает panic-флаг вместе со strict/rotate-on-connect, то есть panic теперь реально влияет на effective policy. 
+
+Базовый getter panic-флага сохранён и используется в runtime-policy. 
+
+Коммит: d2e4ce6. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "setVpnSecurityPanicRotateNow\\(Z\\)V|getVpnSecurityPanicRotateNow\\(\\)Z" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1210,1240p;836,862p;547,560p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1210,1240p;836,862p;547,560p'
+
+✅ git status --short && git log --oneline -n 2
+
+
+файлов (5)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++288
+-13
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++120
+-4
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++288
+-13
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++120
+-4
+
+SettingsPreferenceFragment.smali
+exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali
++0
+-3
+
+14)  добавил ещё один безопасный шаг в централизованный runtime-контракт DataStore для обеих версий (exclavemod и exclavetheme):
+
+getVpnSecurityLeakTest()
+
+getVpnSecurityRuntimeLeakTestEnabled() (гейтится runtimeHardening)
+
+setVpnSecurityLeakTest(Z)
+Это подготавливает следующий этап runtime-интеграции leak-test без правок чувствительных участков VPN/сборки конфига. 
+
+Существующая panic-rotate ветка сохранена и не конфликтует с новой leak-test частью; write-path для panic также остаётся на месте. 
+
+Коммит: 96488ee. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "getVpnSecurityLeakTest\\(\\)Z|getVpnSecurityRuntimeLeakTestEnabled\\(\\)Z|setVpnSecurityLeakTest\\(Z\\)V" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '547,602p;1258,1282p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '547,602p;1258,1282p'
+
+✅ git status --short && git log --oneline -n 2
+
+
+файлов (5)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++337
+-13
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++120
+-4
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++337
+-13
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++120
+-4
+
+SettingsPreferenceFragment.smali
+exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali
++0
+-3
+
+15) активировал следующий шаг UI→runtime для новых security-флагов:
+
+в обеих версиях (exclavemod и exclavetheme) заменил disabled placeholders vpnSecurityLeakTest и vpnSecurityPanicRotateNow на рабочие SwitchPreference с defaultValue=false;
+
+обновил подписи, чтобы было понятно, что эти опции относятся к runtime hardening/экстренной ротации. 
+
+Это сделано без изменения чувствительных smali-потоков VpnService/register-логики, то есть риск регрессий минимальный (XML-уровень, persisted keys уже заведены в DataStore ранее
+
+16) сделал следующий runtime-шаг для Leak test в обеих версиях (exclavemod и exclavetheme):
+
+добавлен helper maybeReportVpnSecurityLeakTestEnabled() в ConfigBuilderKt;
+
+helper проверяет DataStore.getVpnSecurityRuntimeLeakTestEnabled();
+
+при включении флага шлёт событие через уже существующий pipeline reportVpnSecurityEvent(...). 
+
+Подключил вызов этого helper в runtime-путь сборки конфига (до этапа сборки inbound), чтобы включённый leak-test фиксировался на сессию через security-events. 
+
+Изменения сделаны без правок VpnService и без вмешательства в register-чувствительные участки, чтобы не спровоцировать регрессии подключения
+
+17) Продолжил план и аккуратно восстановил поведение обновления темы в exclavetheme, не возвращая старый риск NoSuchMethodError:
+
+добавил safeApplyCustomThemeColors(FragmentActivity) с reflection + try/catch;
+
+подключил его в lifecycle (onResume, onStart, onViewCreated) вместо потенциально опасных прямых вызовов. 
+
+Это точечная правка только для UI-фрагмента exclavetheme; VPN runtime/service-код не трогался, чтобы не вносить регрессии в подключение/туннель
+
+18) выровнял поведение UI между версиями: в exclavemod добавлен такой же безопасный helper safeApplyCustomThemeColors(...), как в exclavetheme, чтобы обновление темы работало без риска NoSuchMethodError. 
+
+Подключил helper в lifecycle-точки exclavemod (onResume и onViewCreated) через reflection-safe вызов, без прямого bind к методу applyCustomThemeColorsNow(). 
+
+Правка ограничена UI-фрагментом, VPN/runtime service код не затронут, что минимизирует риск регрессий в подключении.
+
+Коммит: 40b55e0. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "safeApplyCustomThemeColors|applyCustomThemeColorsNow|onResume\\(\\)V|onViewCreated\\(" exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6137,6171p;6328,6336p;6444,6452p'
+
+✅ git status --short && git log --oneline -n 2
+
+
+файлов (8)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++6
+-6
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++337
+-13
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++141
+-4
+
+SettingsPreferenceFragment.smali
++48
+-0
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++6
+-6
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++337
+-13
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++141
+-4
+
+SettingsPreferenceFragment.smali
++39
+-3
+
+19) сделал panic rotate now реально action-like (one-shot), чтобы флаг не зависал навсегда:
+
+в ConfigBuilderKt обеих версий добавлен helper clearVpnSecurityPanicRotateNowAfterBuild();
+
+helper читает getVpnSecurityPanicRotateNow(), сбрасывает через setVpnSecurityPanicRotateNow(false) и пишет security-event при включённых событиях. 
+
+Подключил этот helper в build-flow сразу после этапа сборки inbound (:cond_35), чтобы panic-rotation применялся для текущей сборки и автоматически очищался после использования. 
+
+Изменение локализовано в config-builder, без правок VpnService (минимальный риск регрессий сетевого пайплайна
+
+20) усилил runtime-политику для режима Leak test (в обеих версиях):
+
+в getVpnSecurityRuntimeEnforceBlockTrafficOnDisconnect() leak-test теперь учитывается как строгий триггер (при runtime hardening форсирует fail-closed поведение);
+
+в getVpnSecurityRuntimeStrictDnsNoFallbackEnabled() leak-test также учитывается как строгий триггер (форсирует strict DNS/no-fallback при runtime hardening). 
+
+Это приближает leak-test к реальному “строгому” режиму проверки утечек и уменьшает шанс ложного “чистого” результата из-за мягких политик сети/DNS.
+
+Изменения локализованы в DataStore runtime-слое (без правок VpnService), чтобы не ломать сервисный pipeline.
+
+Коммит: a4021c5. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "getVpnSecurityRuntimeEnforceBlockTrafficOnDisconnect|getVpnSecurityRuntimeStrictDnsNoFallbackEnabled|getVpnSecurityRuntimeLeakTestEnabled" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '600,636p;949,976p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '600,636p;949,976p'
+
+✅ git status --short && git log --oneline -n 2
+
+
+файлов (8)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++6
+-6
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++349
+-13
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++166
+-4
+
+SettingsPreferenceFragment.smali
++48
+-0
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++6
+-6
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++349
+-13
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++166
+-4
+
+SettingsPreferenceFragment.smali
++39
+-3
+
+21) усилил leak test как строгий runtime-профиль ещё в трёх policy-точках (обе версии exclavemod/exclavetheme):
+
+getVpnSecurityRuntimeLocalProxyAuthEnabled() — leak-test теперь форсирует локальный SOCKS auth при включённом runtime hardening;
+
+getVpnSecurityRuntimeLocalHttpProxyAuthEnabled() — leak-test форсирует локальный HTTP auth;
+
+getVpnSecurityRuntimeRandomizeLocalPortEnabled() — leak-test форсирует рандомизацию локальных inbound портов. 
+
+Это логически продолжает предыдущие шаги: leak-test теперь не просто “флаг”, а реально подтягивает более строгую локальную поверхность (auth + random port), чтобы результаты self-check были более репрезентативными и без “мягких” режимов.
+
+Правки ограничены DataStore runtime-слоем, без изменений VpnService/критичных flow-участков
+
+22) Added app:dependency="vpnSecurityRuntimeHardeningEnabled" to vpnSecurityLeakTest in both product variants so the toggle is only available when runtime hardening is enabled. 
+
+Added the same dependency to vpnSecurityPanicRotateNow in both variants for consistent gating of security-sensitive actions
+
+23) закрыл потенциальный регрессионный сценарий: в clearVpnSecurityPanicRotateNowAfterBuild() добавил дополнительную проверку getVpnSecurityRuntimeRotateCredentialsOnConnectEnabled() перед сбросом флага vpnSecurityPanicRotateNow (для exclavemod). Теперь одноразовый panic-флаг не «съедается», если runtime-политика ротации фактически не активна (например, hardening выключен). 
+
+Сделал симметричную правку для exclavetheme, чтобы поведение обеих сборок не расходилось и не появлялись регрессии между flavor’ами. 
+
+Изменения закоммичены на текущей ветке (b060b61) и PR через make_pr создан.
+
+Testing
+
+✅ git diff -- exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '1,200p'
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '380,410p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '316,346p'
+
+✅ git status --short
+
+✅ git log --oneline -n 2
+
+
+файлов (8)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++8
+-6
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++367
+-13
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++172
+-4
+
+SettingsPreferenceFragment.smali
++48
+-0
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++8
+-6
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++367
+-13
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++172
+-4
+
+SettingsPreferenceFragment.smali
++39
+-3
+
+24) обновил setVpnSecurityRuntimeHardeningEnabled(Z) так, чтобы при выключении runtime hardening автоматически сбрасывался одноразовый флаг vpnSecurityPanicRotateNow=false. Это убирает риск «залипшего» panic-rotate, который мог неожиданно сработать позже при повторном включении hardening
+
+25) убрал ещё один потенциальный регресс: перенос clearVpnSecurityPanicRotateNowAfterBuild() из середины сборки (сразу после добавления inbound) в самый конец buildV2RayConfig, непосредственно перед return-object. Теперь panic-rotate не будет сбрасываться преждевременно, если конфиг не дособерётся дальше по коду. 
+
+Ту же правку сделал симметрично для exclavetheme, чтобы избежать расхождений поведения между flavor’ами
+
+26) Продолжил изначальный план и усилил защиту от регрессий для runtime-флагов: в setVpnSecurityRuntimeHardeningEnabled(Z) добавил сброс не только vpnSecurityPanicRotateNow, но и vpnSecurityLeakTest при выключении hardening. Это предотвращает перенос «временных» режимов в будущие сессии после повторного включения hardening
+
+27) добавил защиту от регрессий на уровне data layer (не только UI): в DataStore обновил setVpnSecurityPanicRotateNow(Z) и setVpnSecurityLeakTest(Z) так, чтобы попытка выставить true при выключенном vpnSecurityRuntimeHardeningEnabled автоматически принудительно превращалась в false. Это исключает обход runtime-ограничений через внешние вызовы setter’ов
+
+28) Доделал следующий оставшийся шаг безопасно и симметрично в exclavemod + exclavetheme: сделал Leak test one-shot (аналогично panic), чтобы он автоматически сбрасывался после успешной сборки V2Ray-конфига.
+
+Добавлен helper clearVpnSecurityLeakTestAfterBuild() в обеих версиях: проверяет effective runtime leak-test, сбрасывает флаг vpnSecurityLeakTest=false, пишет security-event через существующий pipeline.
+
+Вызов helper включён в конец buildV2RayConfig(...) перед panic-cleanup и return-object, чтобы не “съедать” флаг при неуспешной/незавершённой сборке.
+
+Это снижает риск регрессий и исключает «залипание» leak-test режима между сессиями
+
+29) добавил наблюдаемость runtime-hardening в обеих версиях (exclavemod + exclavetheme): новый helper maybeReportVpnSecurityRuntimePolicySummary() теперь логирует, какие именно политики реально активны в текущей сессии (kill-switch, strict DNS no-fallback, SOCKS/HTTP auth, random port, rotate, disable local API/diagnostics, minimal telemetry). Это сделано через уже существующий gated pipeline reportVpnSecurityEvent(...), поэтому legacy-поведение не меняется при выключенном hardening/events.
+
+Подключил вызов summary-helper в build-flow сразу после существующего leak-test event, до сборки inbound, чтобы события фиксировались на сессию предсказуемо и централизованно в обеих flavor-ветках.
+
+Изменения локализованы только в ConfigBuilderKt.smali (обе версии), без правок VpnService/state machine, чтобы минимизировать риск регрессий. Коммит: b5ac66a.
+
+Testing
+
+✅ rg -n "maybeReportVpnSecurityRuntimePolicySummary|runtime hardening profile active|minimal telemetry policy active" exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '378,540p;4790,4855p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '312,474p;3310,3375p'
+
+✅ git status --short && git diff --stat
+
+✅ git status --short && git log --oneline -n 2
+
+
+файла (2)
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++133
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++133
+-0
+
+30) закрыл следующий практический шаг по hardening на уровне манифеста в обеих версиях (exclavemod и exclavetheme):
+
+android:allowBackup переключён на false;
+
+явно добавлен android:debuggable="false" в <application>.
+Это снижает поверхность утечки пользовательских данных/конфигов через бэкапы и риск запуска в debug-состоянии в прод-сборке.
+
+Проверил, что критичные элементы VPN-security не сломаны и остались на месте (включая networkSecurityConfig, BIND_VPN_SERVICE, exported=false у VPN service), чтобы не вносить регрессии в работу туннеля/сервисов
+
+Добавил ещё один безопасный анти-регрессионный шаг в data-layer для обеих версий (exclavemod + exclavetheme): новый метод sanitizeVpnSecurityTransientFlags() в DataStore централизованно сбрасывает временные one-shot флаги (vpnSecurityPanicRotateNow, vpnSecurityLeakTest), если vpnSecurityRuntimeHardeningEnabled=false. Это закрывает edge-case, когда флаги могли быть выставлены обходными путями (вне обычных setter’ов) и “протечь” в будущие сессии.
+
+Подключил этот sanitizer в runtime-точку сборки конфига (ConfigBuilderKt) до leak-test/policy-reporting, чтобы инвариант всегда применялся на границе build-flow и не ломал сетевой pipeline/VpnService-логику
+
+Сделал ещё один безопасный шаг на UI-уровне в обеих версиях (exclavemod и exclavetheme): добавил app:dependency="vpnSecurityRuntimeHardeningEnabled" для ключевых тумблеров раздела VPN Security (strict mode, local SOCKS/HTTP auth, random port, disable local API/diagnostics, block on disconnect, strict DNS, disable DNS fallback, security events, minimal telemetry). Это синхронизирует UI с реальной runtime-gating логикой и снижает риск “ложной конфигурации”, когда пользователь меняет опцию при выключенном hardening и ожидает эффект сразу.
+
+Изменение локализовано только в XML настроек (без правок VpnService/туннельного пайплайна), чтобы минимизировать риск регрессий в подключении и сетевой логике
+
+Сделал ещё один шаг, направленный именно на стабильность подключения без удаления hardening-кода:
+
+перевёл vpnSecurityStrictMode в default=false в UI для обеих версий;
+
+синхронизировал это же значение в DataStore.getVpnSecurityStrictMode() (fallback по умолчанию тоже false).
+Это снижает риск, что при первом включении runtime hardening автоматически активируется слишком жёсткий профиль, который может ломать подключение у части конфигураций/провайдеров. Hardening-функции при этом полностью остаются в коде и доступны как opt-in
+
+Закрыл ещё один важный слой централизации конфигурации: добавил в DataStore обеих версий недостающие setter-методы для policy-флагов VPN Security (StrictMode, RotateCredentialsOnConnect, DisableLocalApiDiagnostics, RandomizeLocalPort, BlockTrafficOnDisconnect, StrictDnsMode, DisableDnsFallback, EventsEnabled, MinimalTelemetry).
+Это выравнивает контракт read/write, уменьшает разрозненные прямые записи ключей и снижает риск будущих регрессий при доработке runtime/UI логики.
+
+Изменения локализованы только в DataStore.smali (оба flavor), чтобы не затронуть подключение/запуск VPN-интерфейса и не ломать уже рабочие участки конфига/сервиса.
+
+Коммит: 98b9250. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "setVpnSecurityStrictMode|setVpnSecurityRotateCredentialsOnConnect|setVpnSecurityDisableLocalApiDiagnostics|setVpnSecurityRandomizeLocalPort|setVpnSecurityBlockTrafficOnDisconnect|setVpnSecurityStrictDnsMode|setVpnSecurityDisableDnsFallback|setVpnSecurityEventsEnabled|setVpnSecurityMinimalTelemetry" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1460,1615p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1460,1615p'
+
+✅ git status --short && git diff --stat
+
+✅ git status --short && git log --oneline -n 4
+
+
+файлов (8)
+
+AndroidManifest.xml
+exclavemod/AndroidManifest.xml
++2
+-1
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++11
+-1
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++134
+-1
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++145
+-0
+
+AndroidManifest.xml
+exclavetheme/AndroidManifest.xml
++2
+-1
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++11
+-1
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++134
+-1
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++145
+-0
+
+Добавил следующий логичный слой централизованной логики в DataStore (обе версии):
+
+applyVpnSecurityRecommendedProfile() — применяет согласованный “recommended” набор флагов через уже централизованные setter’ы (runtime hardening ON, auth/rotation/random port/block on disconnect/strict DNS no-fallback/events/min telemetry ON, strictMode OFF для совместимости, transient-флаги очищаются);
+
+applyVpnSecurityLegacyProfile() — возвращает legacy-профиль (runtime hardening OFF + очистка transient-флагов).
+Это подготавливает следующий шаг плана (one-click apply/reset из UI) без трогания чувствительных runtime-веток подключения.
+
+Изменения локализованы только в data-layer (DataStore.smali), чтобы минимизировать регрессии в установлении VPN-интерфейса.
+
+Коммит: 2c2352b. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "applyVpnSecurityRecommendedProfile|applyVpnSecurityLegacyProfile" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1560,1675p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1560,1675p'
+
+✅ git status --short && git diff --stat
+
+✅ git status --short && git log --oneline -n 4
+
+
+файлов (8)
+
+AndroidManifest.xml
+exclavemod/AndroidManifest.xml
++2
+-1
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++11
+-1
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++194
+-1
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++145
+-0
+
+AndroidManifest.xml
+exclavetheme/AndroidManifest.xml
++2
+-1
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++11
+-1
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++194
+-1
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++145
+-0
+
+Сделал реально рабочий UX-шаг “одной кнопкой” в обеих версиях (exclavemod + exclavetheme), без правок чувствительных VPN runtime/service участков:
+
+добавил в VPN Security два action-пункта:
+vpnSecurityApplyRecommendedProfile и vpnSecurityApplyLegacyProfile;
+
+добавил соответствующие централизованные константы в Key.smali;
+
+подключил обработку кликов в SettingsPreferenceFragment.onPreferenceTreeClick(...), где вызываются уже созданные DataStore-профили:
+applyVpnSecurityRecommendedProfile() и applyVpnSecurityLegacyProfile().
+
+Это закрывает следующий пункт плана (“рекомендованный профиль + rollback”) рабочим кодом, а не placeholder’ами, и минимизирует регрессии за счёт переиспользования централизованного DataStore-контракта
+
+Сделал следующую доработку для стабильного UX без вмешательства в VPN runtime/service: после применения пресетов (Recommended/Legacy) экран настроек теперь сразу перезагружается (onCreatePreferencesFix(null, null)), чтобы пользователь мгновенно видел фактически применённые значения/зависимости тумблеров, без ручного переоткрытия экрана.
+Сделано симметрично в exclavemod и exclavetheme внутри onPreferenceTreeClick(...) после вызовов applyVpnSecurityRecommendedProfile() и applyVpnSecurityLegacyProfile().
+
+Изменение ограничено только UI-слоем настроек, чтобы не затронуть и не регресснуть запуск/подключение VPN интерфейса.
+
+Коммит: e399e77. PR через make_pr создан.
+
+Testing
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6346,6395p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6588,6640p'
+
+✅ rg -n "applyVpnSecurityRecommendedProfile\\(\\)V|applyVpnSecurityLegacyProfile\\(\\)V|onCreatePreferencesFix\\(Landroid/os/Bundle;Ljava/lang/String;\\)V" exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | head -n 30
+
+✅ git status --short && git diff --stat
+
+✅ git status --short && git log --oneline -n 4
+
+
+файлов (12)
+
+AndroidManifest.xml
+exclavemod/AndroidManifest.xml
++2
+-1
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++19
+-1
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++4
+-0
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++194
+-1
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++145
+-0
+
+SettingsPreferenceFragment.smali
++56
+-0
+
+AndroidManifest.xml
+exclavetheme/AndroidManifest.xml
++2
+-1
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++19
+-1
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++4
+-0
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++194
+-1
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++145
+-0
+
+SettingsPreferenceFragment.smali
++56
+-0
+
+Добавил Compatibility mode для VPN hardening (в обеих версиях), чтобы уменьшить риск регрессий подключения при включённом runtime hardening:
+
+новый ключ/переключатель vpnSecurityCompatibilityMode (default true, зависим от runtime hardening) в VPN Security UI;
+
+новый константный ключ VPN_SECURITY_COMPATIBILITY_MODE в Key.smali;
+
+в DataStore добавлены get/setVpnSecurityCompatibilityMode и новый runtime-композит getVpnSecurityRuntimeStrictModeForceEnabled() (strict-force работает только если runtime hardening ON + strict mode ON + compatibility mode OFF).
+
+runtime composite policy-геттеры переведены с “сырого strict mode” на getVpnSecurityRuntimeStrictModeForceEnabled() (block-on-disconnect, local auth, rotate, disable local api, strict dns, minimal telemetry, randomize port), что делает rollout мягче и безопаснее для рабочих подключений
+
+Продолжил «оставшиеся шаги» безопасным data-layer улучшением в обеих версиях:
+
+getVpnSecurityRuntimeEventsEnabled() теперь принудительно включает события при активном runtime leak-test (чтобы leak-test не был «тихим»). 
+
+applyVpnSecurityRecommendedProfile() теперь явно фиксирует compatibilityMode=true (детерминированное поведение пресета). 
+
+applyVpnSecurityLegacyProfile() теперь тоже возвращает compatibilityMode=true как безопасный baseline перед дальнейшим re-enable hardening. 
+
+Закоммитил изменения: 695ee00.
+
+Создал PR через make_pr (требование выполнено).
+
+Что по плану осталось (по факту кода)
+Leak test пока остаётся policy/event-driven, а не полноценным активным сетевым self-test (нет отдельного runtime-блока с DNS/WebRTC/порт-сканом; сейчас это флаг + событие + one-shot reset). Это видно по maybeReportVpnSecurityLeakTestEnabled() и cleanup-методам. 
+
+Intrusion response как автоматические действия уровня restart tunnel / notify user / rotate-on-incident частично закрыт через события и runtime-политики, но отдельного оркестратора реакций на инцидент в выделенном модуле пока нет (это следующий логичный шаг).
+
+Testing
+
+✅ git diff --stat; git diff -- exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1,220p'
+
+✅ git status --short; rg -n "getVpnSecurityRuntimeEventsEnabled\\(\\)Z|applyVpnSecurityRecommendedProfile\\(\\)V|applyVpnSecurityLegacyProfile\\(\\)V|setVpnSecurityCompatibilityMode\\(Z\\)V" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '700,732p;1648,1712p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '700,732p;1648,1712p'
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali && git commit -m "Harden VPN profile defaults and leak-test event visibility" && git log --oneline -n 3
+
+✅ git status --short
+
+
+файла (2)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++19
+-2
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++19
+-2
+
+Усилил observability для one-shot режимов. Теперь getVpnSecurityRuntimeEventsEnabled() принудительно включает security events не только для runtime hardening + events toggle, но и при активных Leak test / Panic rotate now (чтобы такие сессии не проходили «тихо»). 
+
+Это снижает риск регрессий мониторинга: даже если пользователь отключил постоянный флаг событий, критичные временные режимы всё равно оставляют след в существующем event-pipeline (при включённом runtime hardening). 
+
+Изменения закоммичены: 3cc8a56, PR через make_pr создан.
+
+Testing
+
+✅ git status --short; rg -n "getVpnSecurityRuntimeEventsEnabled\\(\\)Z|getVpnSecurityPanicRotateNow\\(\\)Z|getVpnSecurityRuntimeLeakTestEnabled\\(\\)Z" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '707,736p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '707,736p'
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali && git commit -m "Force security event pipeline for panic/leak one-shot modes" && git log --oneline -n 3
+
+✅ git status --short
+
+
+файла (2)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++25
+-2
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++25
+-2
+
+В обработчиках profile-action убрал хардкод строковых ключей и перевёл логику на централизованные константы Key (VPN_SECURITY_APPLY_RECOMMENDED_PROFILE, VPN_SECURITY_APPLY_LEGACY_PROFILE, VPN_SECURITY_SCREEN) в обеих версиях (exclavemod/exclavetheme). Это снижает риск рассинхронизации ключей между XML, DataStore и UI-smali
+
+Вынес перезагрузку вложенного VPN-экрана в отдельный helper reloadVpnSecurityScreen() в обеих версиях (exclavemod и exclavetheme). Теперь это централизованный путь через setPreferencesFromResource(R.xml.global_preferences, Key.VPN_SECURITY_SCREEN). 
+
+Обе action-ветки (recommended/legacy) в onPreferenceTreeClick(...) теперь вызывают helper, вместо дублирования кода. Это уменьшает риск будущих ошибок при доработках и сохраняет уже исправленное поведение без подмешивания root-настроек. 
+
+Ранее добавленные централизованные ключи из Key остаются в использовании в обработчиках profile-actions
+
+В reloadVpnSecurityScreen() (обе версии) после scoped reload теперь дополнительно вызывается safeApplyCustomThemeColors(getActivity()). Это уменьшает риск визуальных регрессий после применения профилей (особенно в theme-варианте). 
+
+Существующая схема profile-actions сохранена: обработчики recommended/legacy по-прежнему идут через единый helper reloadVpnSecurityScreen(), без перезагрузки полного root-дерева настроек и без вмешательства в DataStore-политики. 
+
+Коммит: 0823003. PR через make_pr создан.
+
+Testing
+
+✅ git status --short; rg -n "reloadVpnSecurityScreen\\(\\)V|safeApplyCustomThemeColors\\(Landroidx/fragment/app/FragmentActivity;\\)V|getActivity\\(\\)Landroidx/fragment/app/FragmentActivity;" exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali; nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6172,6192p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6387,6408p'
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali && git commit -m "Re-apply safe theme colors after VPN security subtree reload" && git log --oneline -n 3
+
+✅ git status --short
+
+
+файла (4)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++25
+-2
+
+SettingsPreferenceFragment.smali
++22
+-8
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++25
+-2
+
+SettingsPreferenceFragment.smali
++22
+-8
+
+в applyVpnSecurityLegacyProfile() теперь явно добавлен сброс strictMode=false для обеих версий (exclavemod/exclavetheme). Это убирает «залипание» strict-режима после legacy rollback и снижает риск неожиданно жёсткого поведения при повторном ручном включении hardening. 
+
+Остальная логика legacy-профиля сохранена: compatibility остаётся true, runtime hardening отключается, one-shot флаги (panic/leak) очищаются
+
+Сделал UX-уточнение для двух action-пунктов в VPN Security в обеих версиях (exclavemod/exclavetheme) — теперь в summary явно описано, что:
+
+recommended-профиль применяется сразу и для полного эффекта при активной сессии лучше переподключить VPN;
+
+legacy-профиль делает rollback (выключает runtime hardening и сбрасывает временные security-флаги). 
+
+Это улучшает предсказуемость поведения для пользователя и снижает риск «ложной» интерпретации того, что делает каждая кнопка
+
+Доделал следующий «хвост» из изначального плана — intrusion response как отдельную опцию и runtime-политику (в обеих flavor-версиях):
+
+добавлен новый тумблер vpnSecurityIntrusionResponseEnabled в VPN Security UI (зависит от vpnSecurityRuntimeHardeningEnabled, default=false). 
+
+добавлена централизованная константа VPN_SECURITY_INTRUSION_RESPONSE_ENABLED в Key.smali обеих версий. 
+
+расширен DataStore-контракт: getVpnSecurityIntrusionResponseEnabled(), getVpnSecurityRuntimeIntrusionResponseEnabled(), setVpnSecurityIntrusionResponseEnabled(Z), плюс аккуратная интеграция в Recommended/Legacy профили (с compatibility-first дефолтом). 
+
+добавлена runtime-реакция в ConfigBuilderKt: при security event и включённой intrusion-response автоматически «вооружается» one-shot panicRotateNow (если он ещё не активен), а в policy summary теперь явно пишется, что intrusion response активен
+
+Исправил регрессионную проблему из прошлого PR: раньше intrusion response мог выставлять panicRotateNow даже на информационных событиях (policy summary), т.к. всё шло через один reportVpnSecurityEvent.
+Теперь разделил каналы:
+
+reportVpnSecurityEvent(...) — только логирование (как и должно быть).
+
+reportVpnSecurityIncidentEvent(...) — только для инцидентов; именно тут происходит panicRotateNow=true при активном runtime intrusion response.
+Это сделано симметрично в exclavemod и exclavetheme. 
+
+Перевёл на incident-канал только действительно инцидентные ветки fallback:
+
+SOCKS manual creds отсутствуют → auto creds.
+
+HTTP manual creds отсутствуют → auto creds.
+Тем самым исключены ложные «panic»-срабатывания на обычные информационные сообщения
+
+Продолжил план и закрыл ещё один анти-регрессионный edge-case в DataStore для обеих версий (exclavemod и exclavetheme): при выключении vpnSecurityRuntimeHardeningEnabled теперь дополнительно принудительно сбрасывается vpnSecurityIntrusionResponseEnabled=false (вместе с panic/leak transient-флагами). Это убирает «залипание» intrusion-response между сессиями/режимами. 
+
+Усилил write-path инвариант: в setVpnSecurityIntrusionResponseEnabled(Z) добавлена защита — попытка выставить true при выключенном runtime hardening автоматически понижается до false. Это синхронизирует data-layer с runtime-gating и предотвращает рассинхрон состояния через косвенные вызовы setter-а
+
+Продолжил изначальный план и добавил ещё один runtime-инцидентный хук без ломки legacy-пути: теперь в VpnService.startVpn() при попытке allowAppsBypassVpn, если bypass блокируется политикой (getVpnSecurityRuntimeEnforceBlockTrafficOnDisconnect()), это рассматривается как security-инцидент. 
+
+В этой ветке добавил безопасную реакцию:
+
+если включён runtime intrusion-response, выставляется one-shot setVpnSecurityPanicRotateNow(true);
+
+при включённых security events пишется лог bypass request blocked by runtime policy.
+Всё это gated по существующим флагам, поэтому при обычном/legacy сценарии поведение не меняется. 
+
+Путь, где bypass разрешён, оставлен прежним (allowBypass()), чтобы не вносить лишних регрессий в рабочие конфигурации
+
+50) снизил риск регрессий за счёт централизации инцидентной реакции в DataStore (обе версии).
+Добавлен единый метод triggerVpnSecurityIncidentResponse(), который при активной runtime intrusion-policy выставляет one-shot panicRotateNow и leakTest. 
+
+Перевёл ConfigBuilderKt.reportVpnSecurityIncidentEvent(...) на этот единый метод (вместо дублированной локальной логики), при этом существующий event-pipeline сохранён. 
+
+Инцидентные fallback-ветки SOCKS/HTTP продолжают вызывать incident-reporter, но теперь через централизованный data-layer trigger. 
+
+В VpnService (обе версии) bypass-block incident теперь тоже использует тот же triggerVpnSecurityIncidentResponse(), а логирование по-прежнему gated через runtime events. Это убирает расхождения поведения между runtime-точками и уменьшает вероятность регрессий
+
+Продолжил план в сторону наблюдаемости и анти-регрессионной централизации: добавил счётчик security-инцидентов vpnSecurityIncidentCount в обеих версиях через Key + DataStore (getter/increment/reset). Это даёт измеряемость инцидентов без вмешательства в чувствительный туннельный pipeline. 
+
+Усилил triggerVpnSecurityIncidentResponse():
+
+сначала проверяется runtimeHardening,
+
+затем инкрементируется incident counter,
+
+и только потом (если включён intrusion-response) включаются one-shot panicRotateNow + leakTest.
+Это сохраняет совместимость и делает реакцию более детерминированной. 
+
+Для предотвращения накопления «старого состояния» при смене профиля добавил сброс incident counter в applyVpnSecurityRecommendedProfile() и applyVpnSecurityLegacyProfile() в обеих версиях
+
+Закрыл UX-регрессию для счётчика инцидентов в обеих версиях:
+
+Исправил формулировку summary у vpnSecurityIncidentCountView на корректную для persistent-счётчика: «с момента последнего сброса». 
+
+В SettingsPreferenceFragment.onNavigateToScreen(...) добавил явный вызов updateVpnSecurityIncidentCountSummary() сразу после setPreferenceScreen(...), чтобы счётчик обновлялся при первом входе в VPN Security экран, а не только после reload-экшенов. 
+
+Синхронизировал текст, формируемый helper-методом, с новой семантикой
+
+Продолжил план и добавил ещё один anti-regression шаг в data-layer для обеих версий: при выключении vpnSecurityRuntimeHardeningEnabled теперь сбрасывается не только panic/leak/intrusionResponse, но и vpnSecurityIncidentCount через putInt(..., 0).
+Это убирает перенос старого incident-состояния в будущие сессии после повторного включения hardening
+
+Добавил ещё один anti-regression/observability шаг в обеих версиях:
+getVpnSecurityRuntimeEventsEnabled() теперь принудительно включает event-pipeline, если при включённом runtime hardening накоплен vpnSecurityIncidentCount > 0 (даже когда ручной toggle events выключен).
+Это снижает риск «тихих» инцидентов после того, как счётчик уже зафиксировал проблему. 
+
+При этом сохранены существующие условия активации events (leak-test/panic/events-toggle) — добавлен именно дополнительный guard по incident count, без вмешательства в VPN service pipeline
+
+Добавил UX-safe поведение для новых security-настроек: в обеих версиях кнопка vpnSecurityResetIncidentCount теперь автоматически disabled, когда счётчик инцидентов равен 0, и включается только при incidentCount > 0.
+Это снижает риск ложных/бесполезных действий пользователя и убирает no-op клики. 
+
+Логика сделана внутри уже существующего updateVpnSecurityIncidentCountSummary(), то есть без вмешательства в VPN runtime/service pipeline — только UI-слой, минимальный риск регрессий.
+
+Коммит: 96cad25. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "updateVpnSecurityIncidentCountSummary|VPN_SECURITY_RESET_INCIDENT_COUNT|setEnabled\\(Z\\)V" exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali && nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6172,6245p' && nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6387,6460p' && git diff --stat
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali && git commit -m "Disable incident reset action when counter is zero" && git log --oneline -n 4 && git status --short
+
+
+файлов (12)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++16
+-0
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++8
+-0
+
+VpnService.smali
+exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++19
+-1
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++166
+-1
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++26
+-3
+
+SettingsPreferenceFragment.smali
++91
+-0
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++16
+-0
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++8
+-0
+
+VpnService.smali
+exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++19
+-1
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++166
+-1
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++26
+-3
+
+SettingsPreferenceFragment.smali
++91
+-0
+
+Продолжил план в части observability и безопасной диагностики: расширил maybeReportVpnSecurityRuntimePolicySummary() в обеих версиях так, чтобы при incidentCount > 0 в runtime-summary логировалось отдельное событие:
+VPN security event: incident counter active = <count>.
+Это не меняет service/tunnel flow, а только добавляет диагностическую прозрачность существующего security-состояния. 
+
+Для безопасного формирования сообщения увеличен .locals в helper до 3 (StringBuilder + count), чтобы не трогать горячие runtime-ветки и избежать регрессий регистров.
+
+Коммит: bc40b27. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "maybeReportVpnSecurityRuntimePolicySummary|incident counter active" exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali && nl -ba exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '391,535p' && nl -ba exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '327,472p' && git diff --stat
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali && git commit -m "Report active VPN incident counter in runtime policy summary" && git log --oneline -n 4 && git status --short
+
+
+файлов (12)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++16
+-0
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++8
+-0
+
+VpnService.smali
+exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++19
+-1
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++166
+-1
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++52
+-6
+
+SettingsPreferenceFragment.smali
++91
+-0
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++16
+-0
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++8
+-0
+
+VpnService.smali
+exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++19
+-1
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++166
+-1
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++52
+-6
+
+SettingsPreferenceFragment.smali
++91
+-0
+
+Added a new VPN Security preference row (vpnSecurityLastIncidentReasonView) to show the last recorded incident reason in both app variants. 
+
+Added new key constants for vpnSecurityLastIncidentReason and vpnSecurityLastIncidentReasonView in both Key.smali files. 
+
+Extended DataStore in both variants with getVpnSecurityLastIncidentReason() and setVpnSecurityLastIncidentReason(...), and ensured last reason is cleared when hardening is disabled or incident count is reset. 
+
+Updated incident-reporting call paths to persist the incident reason before triggering response logic (ConfigBuilderKt and bypass-block path in VpnService). 
+
+Updated settings summary refresh logic to render Последний инцидент: нет or Последний инцидент: <reason> dynamically from DataStore in both variants
+
+Доделал правки по регрессии в логике runtime-логирования security-событий: getVpnSecurityRuntimeEventsEnabled() снова уважает пользовательский тумблер vpnSecurityEventsEnabled и больше не включает события только из-за incidentCount > 0 (в обеих ветках exclavemod/exclavetheme). 
+
+Убрал шумный runtime-лог "incident counter active = ..." из policy-summary, чтобы не форсировать дополнительную телеметрию и не ломать ожидаемое поведение при выключенных событиях. 
+
+Коммит сделан: c18bc39 (Respect events toggle for runtime VPN security logging), PR через make_pr создан.
+
+Testing
+
+✅ git diff --stat; git diff -- exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '1,220p'
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '780,816p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '780,816p'; nl -ba exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '500,522p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '436,458p'; git status --short
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali && git commit -m "Respect events toggle for runtime VPN security logging" && git log --oneline -n 4
+
+
+файлов (12)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++21
+-0
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++12
+-0
+
+VpnService.smali
+exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++23
+-1
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++199
+-0
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++33
+-8
+
+SettingsPreferenceFragment.smali
++134
+-0
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++21
+-0
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++12
+-0
+
+VpnService.smali
+exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++23
+-1
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++199
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++33
+-8
+
+SettingsPreferenceFragment.smali
++134
+-0
+
+Добавил null-safe защиту для vpnSecurityLastIncidentReason в обеих версиях (exclavemod и exclavetheme). Теперь чтение из DataStore всегда возвращает непустой String (если в хранилище null, подставляется ""). 
+
+Усилил запись причины инцидента: setVpnSecurityLastIncidentReason(Ljava/lang/String;)V теперь нормализует null в пустую строку перед putString(...), чтобы исключить возможные NPE/неконсистентное состояние UI и runtime-логики. 
+
+Testing
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '739,760p;1820,1842p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '739,760p;1820,1842p'; git status --short
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali && git commit -m "Harden incident reason storage against null values" && git log --oneline -n 4 && git status --short
+
+
+файлов (12)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++21
+-0
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++12
+-0
+
+VpnService.smali
+exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++23
+-1
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++209
+-0
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++33
+-8
+
+SettingsPreferenceFragment.smali
++134
+-0
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++21
+-0
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++12
+-0
+
+VpnService.smali
+exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++23
+-1
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++209
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++33
+-8
+
+SettingsPreferenceFragment.smali
++134
+-0
+
+добавил новый UI-пункт “Эффективная runtime-политика” (vpnSecurityRuntimePolicyView) в экран VPN Security, чтобы пользователь видел не только тумблеры, но и фактически активный профиль в рантайме.
+
+Добавил централизованные ключи VPN_SECURITY_RUNTIME_POLICY_VIEW в Key.smali обеих версий, чтобы не было хардкода строк и расхождения между XML/UI/smali-логикой.
+
+Расширил updateVpnSecurityIncidentCountSummary() в SettingsPreferenceFragment.smali обеих версий: теперь summary динамически показывает effective runtime-профиль (legacy / strict-force / compatible-hardening) и ключевые runtime-флаги (kill, DNS, SOCKS/HTTP auth, events, intrusion, telemetry
+
+добавил реальный runtime-шаг для Leak test в обеих версиях: новый helper maybeReportVpnSecurityLeakTestRuntimeBaseline() в ConfigBuilderKt.smali (exclavemod/exclavetheme). Он запускается только при активном runtime leak-test и проверяет effective-политику: blockTrafficOnDisconnect, strictDnsNoFallback, SOCKS auth, HTTP auth и random local port. При полном прохождении пишет security-event, при провале — поднимает security-incident через уже существующий incident-pipeline (reportVpnSecurityIncidentEvent).
+
+Подключил вызов нового baseline-check в build-flow сразу после maybeReportVpnSecurityLeakTestEnabled() и до policy-summary, чтобы диагностика сессии была последовательной и предсказуемой в обеих flavor-ветках.
+
+Изменения локализованы в ConfigBuilderKt (без правок VpnService/туннельной state-machine), чтобы минимизировать риск регрессий подключения.
+
+Testing
+✅ rg -n "maybeReportVpnSecurityLeakTestRuntimeBaseline|leak test runtime baseline" exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '386,500p;4868,4890p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '322,438p;3398,3422p'
+
+✅ git diff --stat && git status --short
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali && git commit -m "Add leak-test runtime baseline incident check" && git log --oneline -n 3
+
+✅ git status --short
+
+Коммит: 397cf8b
+PR через make_pr создан.
+
+
+файлов (8)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++5
+-0
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++2
+-0
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++58
+-0
+
+SettingsPreferenceFragment.smali
++139
+-3
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++5
+-0
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++2
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++58
+-0
+
+SettingsPreferenceFragment.smali
++139
+-3
+
+доработал leak-test baseline в обеих версиях (exclavemod + exclavetheme) так, чтобы при провале писалась конкретная причина инцидента, а не общий текст. Теперь отдельно диагностируются: kill-switch inactive, strict DNS inactive, SOCKS auth inactive, HTTP auth inactive, random local port inactive.
+
+Успешный кейс сохранён: при полном соответствии baseline по-прежнему фиксируется событие leak test runtime baseline passed через существующий event-pipeline.
+
+Вызов baseline-check остаётся в безопасной точке build-flow (после sanitize + leak-test flag и до policy-summary), без вмешательства в VpnService/туннельную state machine, что снижает риск регрессий подключения
+
+ усилил leak-test baseline в обеих версиях (exclavemod/exclavetheme) — теперь проверяются не только kill-switch/DNS/auth/random-port, но ещё и:
+
+strict-force profile active,
+
+disable local API/diagnostics active,
+
+minimal telemetry active.
+При первой неуспешной проверке пишется точная причина инцидента, а не общий текст.
+
+Сохранил fail-safe поведение: если все проверки leak-test baseline проходят — пишется success-event; если нет — идёт incident через уже существующий pipeline reportVpnSecurityIncidentEvent(...) (без вмешательства в VpnService hot-path
+
+убрал потенциальный источник ложных «инцидентов»/агрессивных реакций: в maybeReportVpnSecurityLeakTestRuntimeBaseline() (обе версии) перевёл не leak-критичные проверки (strict-force, disable local API diagnostics, minimal telemetry) из уровня incident в advisory event. Это снижает риск ненужного panic/leak-триггера в совместимых конфигурациях, где ключевые leak-защиты при этом включены.
+
+Leak-критичные проверки оставлены строгими (incident): kill-switch, strict DNS/no-fallback, SOCKS auth, HTTP auth, random local port — это сохраняет fail-closed логику именно по утечкам и не размывает её необязательными параметрами.
+
+Коммит: 2e73e95
+PR через make_pr создан.
+
+Testing
+
+✅ rg -n "leak-test advisory|baseline failed \\(strict-force|baseline failed \\(local API|baseline failed \\(minimal telemetry" exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '480,530p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '416,466p'
+
+✅ git diff --stat && git status --short
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali && git commit -m "Downgrade non-leak baseline checks to advisory events" && git log --oneline -n 3
+
+
+файлов (8)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++5
+-0
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++2
+-0
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++122
+-0
+
+SettingsPreferenceFragment.smali
++139
+-3
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++5
+-0
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++2
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++122
+-0
+
+SettingsPreferenceFragment.smali
++139
+-3
+
+скорректировал leak-test baseline в обеих версиях (exclavemod/exclavetheme): оставил в baseline только leak-критичные проверки (kill-switch, strict DNS/no-fallback, SOCKS auth, HTTP auth, random local port), убрав дополнительные не leak-критичные advisory-проверки из этого конкретного шага. Это делает результат leak-test более предсказуемым и без «размывания» сигнала лишними условиями
+
+сделал anti-regression рефакторинг инцидентного пути в обеих версиях (exclavemod + exclavetheme): добавил централизованный метод DataStore.reportVpnSecurityIncident(String) (сохранение причины + запуск incident-response) вместо разрозненных прямых вызовов в разных местах.
+
+Перевёл ConfigBuilderKt.reportVpnSecurityIncidentEvent(...) на новый DataStore helper в обеих версиях — это убирает дублирование и снижает риск рассинхронизации поведения между runtime-точками.
+
+Перевёл bypass-block ветку в VpnService на тот же helper (reportVpnSecurityIncident(...)) в обеих версиях, сохранив текущую функциональность и единый инцидентный pipeline без изменения туннельной state machine.
+
+Коммит: 1610830
+PR через make_pr создан.
+
+Testing
+
+✅ rg -n "reportVpnSecurityIncident\\(Ljava/lang/String;\\)V|reportVpnSecurityIncidentEvent|bypass request blocked by runtime policy" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1820,1860p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1820,1860p'
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali | sed -n '2292,2315p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali | sed -n '2292,2315p'
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '360,376p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali | sed -n '296,312p'
+
+✅ git diff --stat && git status --short
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali && git commit -m "Centralize VPN incident reporting via DataStore helper" && git log --oneline -n 3
+
+
+файлов (12)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++5
+-0
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++2
+-0
+
+VpnService.smali
+exclavemod/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++1
+-3
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++10
+-0
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++89
+-3
+
+SettingsPreferenceFragment.smali
++139
+-3
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++5
+-0
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++2
+-0
+
+VpnService.smali
+exclavetheme/smali/io/nekohasekai/sagernet/bg/VpnService.smali
++1
+-3
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++10
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++89
+-3
+
+SettingsPreferenceFragment.smali
++139
+-3
+
+добавил anti-regression защиту в централизованный инцидентный репортинг (DataStore.reportVpnSecurityIncident(String)) в обеих версиях: теперь null/пустая причина автоматически нормализуется в стабильный fallback "VPN security incident: unspecified" перед записью и trigger incident-response. Это предотвращает «пустые» причины в журнале/UI и делает поведение детерминированным при edge-case вызовах.
+
+Поведение для валидных причин не изменено: если строка непустая, она сохраняется как есть и дальше работает тот же централизованный pipeline инцидента
+
+улучшил наблюдаемость effective-политики в UI (обе версии): в runtime summary добавил недостающие флаги randomPort и rotate, чтобы пользователь видел не только kill/dns/auth/events/..., но и ключевые параметры рандомизации порта и ротации credentials в той же строке статуса.
+
+Изменения только в UI-summary конструировании (без правок VPN state machine / build pipeline), поэтому риск регрессий подключения минимальный
+
+дополнил runtime-policy summary в UI (обе версии): добавил флаг apiOff, который показывает effective-состояние disable local API/diagnostics через getVpnSecurityRuntimeDisableLocalApiDiagnosticsEnabled(). Теперь компактная строка статуса включает ещё один важный hardening-параметр alongside kill/dns/auth/randomPort/rotate/events/intrusion/telemetry
+
+расширил runtime-policy summary в UI (обе версии): добавил отображение one-shot/diagnostic состояний leakTest и panic (через getVpnSecurityRuntimeLeakTestEnabled() и getVpnSecurityPanicRotateNow()), чтобы в одном месте было видно не только базовые hardening-флаги, но и активированные временные security-режимы текущей сессии
+
+добавил постоянную видимость результата leak-test в UI как отдельный read-only пункт vpnSecurityLastLeakTestStatusView в разделе VPN Security. Это даёт пользователю не только события в логах, но и устойчивый статус последней проверки. 
+
+Добавил централизованные ключи для хранения/отображения этого статуса в Key.smali обеих версий (VPN_SECURITY_LAST_LEAK_TEST_STATUS, VPN_SECURITY_LAST_LEAK_TEST_STATUS_VIEW), чтобы не было строкового хардкода между XML/UI/DataStore. 
+
+Расширил DataStore в обеих версиях:
+
+getVpnSecurityLastLeakTestStatus() и setVpnSecurityLastLeakTestStatus(...) (null-safe);
+
+очистка leak-test статуса при выключении runtime hardening;
+
+очистка при reset incident count;
+
+очистка при применении Recommended/Legacy профилей. 
+
+Доработал runtime leak-test baseline в ConfigBuilderKt: теперь при каждом fail-сценарии сохраняется конкретная причина (failed: ...), а при успешном прохождении сохраняется passed — в обеих версиях. 
+
+Обновил SettingsPreferenceFragment: в summary теперь динамически показывается Последний leak-test: нет данных / Последний leak-test: <status> в обоих flavor
+
+при включении Leak test теперь сразу очищается старый статус leak-test, чтобы в UI не оставалось устаревшее passed/failed от прошлой сессии. 
+
+Дополнительно в runtime-точке старта leak-test помечается промежуточный статус running до выполнения baseline-проверок. Это улучшает наблюдаемость и снижает риск ложной интерпретации старого результата
+
+обавила отдельный action-пункт «Сбросить статус leak-test» (vpnSecurityResetLeakTestStatus) в раздел VPN Security. 
+
+Добавила централизованный ключ VPN_SECURITY_RESET_LEAK_TEST_STATUS в Key.smali обеих сборок (без строкового хардкода в обработчиках). 
+
+Подключила обработку клика в SettingsPreferenceFragment.onPreferenceTreeClick(...): по нажатию action очищается vpnSecurityLastLeakTestStatus и сразу перезагружается VPN Security subtree (reloadVpnSecurityScreen()), чтобы UI обновлялся мгновенно. 
+
+Добавил anti-regression UX-гейт: кнопка сброса leak-test статуса теперь автоматически disabled, если статуса нет, и enabled, если статус есть (чтобы убрать пустые/no-op клики
+
+добавила в обеих версиях (exclavemod/exclavetheme) отдельное действие «Сбросить статус leak-test» (vpnSecurityResetLeakTestStatus) в VPN Security UI. 
+
+Добавила централизованный ключ VPN_SECURITY_RESET_LEAK_TEST_STATUS в Key.smali для обеих сборок, чтобы обработчики не использовали хардкод строк. 
+
+Обновила SettingsPreferenceFragment:
+
+обработка клика по reset leak-test статусу (очистка vpnSecurityLastLeakTestStatus + reload VPN screen);
+
+auto-enable/disable кнопки reset в зависимости от того, есть ли вообще сохранённый статус (anti-regression от пустых no-op кликов). 
+
+Добавила ещё один безопасный шаг в runtime-контракт leak-test: в clearVpnSecurityLeakTestAfterBuild() теперь статус running переводится в aborted перед сбросом one-shot флага. Это убирает залипание «running» при незавершённой сессии и делает диагностику консистентнее
+
+сделала anti-regression рефакторинг для leak-test статуса в обеих версиях (exclavemod + exclavetheme): добавила единый DataStore-метод clearVpnSecurityLastLeakTestStatus(), чтобы убрать дублирующиеся прямые записи "" в разных местах. 
+
+Перевела на этот централизованный helper ключевые пути, где ранее вручную писалась пустая строка:
+
+при включении leak-test (setVpnSecurityLeakTest(true)),
+
+в профильных reset-потоках (applyVpnSecurityRecommendedProfile / applyVpnSecurityLegacyProfile). 
+
+Обновила обработчик reset-действия в SettingsPreferenceFragment: теперь он тоже использует централизованный clearVpnSecurityLastLeakTestStatus() вместо прямой записи в key, с последующим reload VPN screen. Это снижает риск рассинхронизации поведения между UI и Data-layer
+
+перевела vpnSecurityLeakTest в UI из постоянного SwitchPreference в one-shot action (Preference) в обеих версиях. Теперь текст явно отражает реальное поведение рантайма: запуск разовой проверки и автосброс флага после применения. 
+
+Обновила обработчик клика в SettingsPreferenceFragment для ключа VPN_SECURITY_LEAK_TEST: по нажатию выставляется setVpnSecurityLeakTest(true) и выполняется reloadVpnSecurityScreen(), чтобы UI сразу показывал актуальное состояние без ручного переоткрытия экрана. 
+
+Изменение локализовано в XML + UI click-handler (без правок VPN service/state-machine), чтобы минимизировать риск регрессий.
+
+Коммит: eb5be09. PR через make_pr создан.
+
+Testing
+
+✅ git status --short; git diff --stat
+
+✅ rg -n "app:key=\"vpnSecurityLeakTest\"|Запустить leak-test сейчас|setVpnSecurityLeakTest\\(Z\\)V|VPN_SECURITY_LEAK_TEST" exclavemod/res/xml/global_preferences.xml exclavetheme/res/xml/global_preferences.xml exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali
+
+✅ nl -ba exclavemod/res/xml/global_preferences.xml | sed -n '168,176p'
+
+✅ nl -ba exclavetheme/res/xml/global_preferences.xml | sed -n '168,176p'
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6784,6810p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '7027,7053p'
+
+✅ git add exclavemod/res/xml/global_preferences.xml exclavetheme/res/xml/global_preferences.xml exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali && git commit -m "Make leak-test trigger one-shot action instead of persistent switch" && git log --oneline -n 6
+
+✅ git status --short
+
+
+файлов (10)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++13
+-4
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++6
+-0
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++65
+-0
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++50
+-3
+
+SettingsPreferenceFragment.smali
++115
+-2
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++13
+-4
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++6
+-0
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++65
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++50
+-3
+
+SettingsPreferenceFragment.smali
++115
+-2
+
+Added a guard in reloadVpnSecurityScreen() (mod variant) to disable the vpnSecurityLeakTest action when the saved leak-test status is "running", preventing repeated triggers during an active run. 
+
+Added the same "running"-status guard in the theme variant for behavior parity across builds
+
+в ветке leak-test (running guard) метода onPreferenceTreeClick(...) дополнительно стабилизировал типизацию регистров — результат Intrinsics.areEqual("running", status) теперь кладётся в v2 (временный bool-регистр), чтобы не смешивать типы и снизить риск verifier-проблем на merge-путях. 
+
+Внёс ту же правку зеркально в exclavetheme, чтобы поведение и bytecode-flow оставались идентичными между вариантами сборки. 
+
+Весь функционал leak-test из плана сохранён (one-shot action, проверка running, reload экрана) — ничего не заглушал и не откатывал. 
+
+Коммит: b63359d. PR-сообщение создано через make_pr.
+
+Testing
+
+✅ git add exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali && git commit -m "Stabilize leak-test branch register typing in settings click handler" && git log --oneline -n 4
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6825,6843p'
+
+✅ nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '7068,7086p'
+
+✅ git diff --stat HEAD~1..HEAD; git status --short
+
+
+файлов (10)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++13
+-4
+
+Key.smali
+exclavemod/smali/io/nekohasekai/sagernet/Key.smali
++6
+-0
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++65
+-0
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++50
+-3
+
+SettingsPreferenceFragment.smali
++167
+-3
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++13
+-4
+
+Key.smali
+exclavetheme/smali/io/nekohasekai/sagernet/Key.smali
++6
+-0
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++65
+-0
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++50
+-3
+
+SettingsPreferenceFragment.smali
++167
+-3
+
+ теперь кнопка сброса vpnSecurityResetLeakTestStatus включается только если статус не пустой и одновременно не running. Это исключает сброс статуса во время активного one-shot запуска. 
+
+Точно такую же логику добавил в exclavetheme, чтобы поведение не расходилось между вариантами. 
+
+Ранее добавленная логика leak-test (one-shot + блокировка повторного старта при running) сохранена; правка точечная и не отключает функционал плана
+
+вернул доступность vpnSecurityResetLeakTestStatus для любого непустого статуса (включая running), чтобы не было “тупика”, когда leak-test завис в running и его нельзя сбросить вручную. 
+
+Усилил обработчик reset: если текущий статус running, сначала принудительно снимается флаг vpnSecurityLeakTest (setVpnSecurityLeakTest(false)), затем очищается lastLeakTestStatus, и только после этого перезагружается экран. Это делает reset безопасным как явный путь отмены/восстановления состояния. 
+
+При этом базовая защита сохранена: action запуска leak-test по-прежнему блокируется при running, то есть повторный запуск во время активного прогона не разрешается
+
+добавил в VPN Security отдельный read-only пункт «Метка времени последнего инцидента» (vpnSecurityLastIncidentTimestampView).
+
+Добавил централизованные ключи в Key.smali для timestamp-поля и его UI-view: VPN_SECURITY_LAST_INCIDENT_TIMESTAMP и VPN_SECURITY_LAST_INCIDENT_TIMESTAMP_VIEW (в обеих сборках).
+
+Расширил DataStore в обеих версиях:
+
+getVpnSecurityLastIncidentTimestamp()
+
+setVpnSecurityLastIncidentTimestamp(long)
+
+запись System.currentTimeMillis() в reportVpnSecurityIncident(...)
+
+очистка timestamp при setVpnSecurityRuntimeHardeningEnabled(false) и при resetVpnSecurityIncidentCount().
+
+В SettingsPreferenceFragment (обе версии) добавил helper updateVpnSecurityLastIncidentTimestampSummary() и встроил его в общий refresh, чтобы timestamp сразу отображался после reload/перехода по экрану безопасности
+
+ закрыл ещё один практический UX/runtime шаг в обеих версиях (exclavemod + exclavetheme): перевёл vpnSecurityPanicRotateNow из SwitchPreference в one-shot action (Preference), чтобы поведение соответствовало фактической логике одноразового триггера, а не постоянного тумблера.
+
+Добавил явную обработку клика для VPN_SECURITY_PANIC_ROTATE_NOW в SettingsPreferenceFragment обеих версий: при нажатии вызывается DataStore.setVpnSecurityPanicRotateNow(true) и затем reloadVpnSecurityScreen(), чтобы состояние экрана сразу синхронизировалось без ручного переоткрытия настроек.
+
+Это продолжает план без вмешательства в чувствительные участки VPN state-machine: изменения ограничены XML/UI-обработчиком, поэтому риск сетевых регрессий минимальный
+
+закрыл следующий anti-regression шаг для one-shot panic rotate в обеих версиях (exclavemod/exclavetheme): добавил отдельный UI-статус vpnSecurityPanicRotateStatusView (idle/armed), чтобы состояние было явно видно пользователю до следующей сборки конфига.
+
+Добавил централизованную константу VPN_SECURITY_PANIC_ROTATE_STATUS_VIEW в Key.smali обеих сборок (без строкового хардкода в UI-логике).
+
+Усилил SettingsPreferenceFragment в обеих версиях:
+
+обновление summary для нового status-view на основе DataStore.getVpnSecurityPanicRotateNow();
+
+автоматическое setEnabled(false) для action-кнопки panic, если она уже armed (защита от повторных/пустых нажатий).
+
+Доработал клик-обработчик panic-action в обеих версиях: перед setVpnSecurityPanicRotateNow(true) теперь проверяется текущее состояние; если already armed — флаг повторно не выставляется, экран просто безопасно перезагружается, что снижает риск UI/runtime рассинхронизации
+
+закрыл следующий runtime/policy шаг в обеих сборках (exclavemod и exclavetheme): добавил опциональный флаг vpnSecurityAutoLeakTestOnIncident, чтобы incident-response не всегда агрессивно включал leak-test, а делал это только при явном opt-in пользователя.
+
+Добавил централизованную константу VPN_SECURITY_AUTO_LEAK_TEST_ON_INCIDENT в Key.smali обеих версий (без строкового хардкода между XML/DataStore/UI).
+
+Расширил DataStore в обеих версиях:
+
+getVpnSecurityAutoLeakTestOnIncidentEnabled()
+
+setVpnSecurityAutoLeakTestOnIncidentEnabled(Z)
+
+инварианты сброса при выключении hardening/выключении intrusion-response, чтобы флаг не “залипал”.
+
+Обновил инцидентный pipeline: в triggerVpnSecurityIncidentResponse() panic-rotate остаётся обязательной реакцией при активном intrusion-response, а leak-test теперь включается только если включён новый opt-in флаг — это снижает риск регрессий подключения в совместимых профилях.
+
+Для детерминизма пресетов добавил явный reset нового флага в applyVpnSecurityRecommendedProfile() и applyVpnSecurityLegacyProfile() в обеих версиях
+
+ сделал ещё один anti-regression шаг в обеих версиях (exclavemod/exclavetheme): добавил централизованный runtime-композит getVpnSecurityRuntimeAutoLeakTestOnIncidentEnabled(), чтобы инцидентная логика опиралась не на “сырой” флаг, а на effective runtime policy (intrusion-response + hardening + opt-in).
+
+Перевёл triggerVpnSecurityIncidentResponse() на этот runtime-композит: panic-rotate как и раньше армитcя при активном intrusion-response, а auto leak-test запускается только если runtime-композит реально активен (что снижает риск рассинхронизации и неожиданных срабатываний).
+
+Обновил runtime-policy summary в UI обеих версий: добавил видимость autoLeakIncident=<bool>, чтобы пользователь видел именно эффективное состояние автозапуска leak-test при инциденте, а не только базовые intrusion/events флаги
+
+сделал ещё один anti-regression шаг в обеих версиях (exclavemod/exclavetheme): добавил централизованный runtime-композит getVpnSecurityRuntimeAutoLeakTestOnIncidentEnabled(), чтобы инцидентная логика опиралась не на “сырой” флаг, а на effective runtime policy (intrusion-response + hardening + opt-in).
+
+Перевёл triggerVpnSecurityIncidentResponse() на этот runtime-композит: panic-rotate как и раньше армитcя при активном intrusion-response, а auto leak-test запускается только если runtime-композит реально активен (что снижает риск рассинхронизации и неожиданных срабатываний).
+
+Обновил runtime-policy summary в UI обеих версий: добавил видимость autoLeakIncident=<bool>, чтобы пользователь видел именно эффективное состояние автозапуска leak-test при инциденте, а не только базовые intrusion/events флаги
+
+сделал точечный anti-regression фикс в data-layer (обе версии exclavemod/exclavetheme): расширил sanitizeVpnSecurityTransientFlags() так, чтобы при неактивной runtime intrusion-response автоматически очищался vpnSecurityAutoLeakTestOnIncident (раньше санитайзер чистил только panic/leak one-shot при выключенном hardening). Это убирает “залипание” эскалационного флага между сессиями и keeps state согласованным с effective runtime-политикой.
+
+Ранее добавленный runtime-композит getVpnSecurityRuntimeAutoLeakTestOnIncidentEnabled() и его использование в инцидентном pipeline сохранены; текущий фикс дополняет этот контур уже на этапе санитизации/подготовки состояния к сборке, не трогая VPN state-machine hot-path
+
+сделал ещё один anti-regression шаг в обеих версиях (exclavemod + exclavetheme): теперь клики по тумблерам VPN_SECURITY_INTRUSION_RESPONSE_ENABLED и VPN_SECURITY_AUTO_LEAK_TEST_ON_INCIDENT в onPreferenceTreeClick(...) принудительно проходят через централизованные DataStore-setter’ы, а затем сразу перезагружают VPN Security subtree.
+
+За счёт этого UI-запись больше не остаётся «сырой» через prefs-only путь: инварианты из data-layer (в т.ч. нормализация зависимости auto-leak от intrusion-policy) применяются детерминированно при каждом пользовательском переключении, что снижает риск регрессий/рассинхронизации состояния между флагами
+
+добавил следующий безопасный шаг observability в обеих версиях (exclavemod + exclavetheme): в maybeReportVpnSecurityRuntimePolicySummary() теперь логируется отдельное событие, если активна effective-policy getVpnSecurityRuntimeAutoLeakTestOnIncidentEnabled() — VPN security event: auto leak-test on incident policy active. Это синхронизирует runtime-summary с новым policy-контуром auto leak-test on incident и упрощает диагностику rollout-сценариев.
+
+Изменение локализовано только в summary-логике (additive event), без вмешательства в VPN state-machine/туннельный hot-path — риск функциональных регрессий минимальный
+
+добавил ещё один anti-regression слой наблюдаемости в обеих версиях (exclavemod/exclavetheme): в DataStore.getVpnSecurityRuntimeEventsEnabled() теперь runtime event-pipeline принудительно активируется не только для leak/panic/events-toggle, но и при активной политике getVpnSecurityRuntimeAutoLeakTestOnIncidentEnabled(). Это убирает риск «тихого» запуска эскалационной auto leak-test-on-incident политики без событий в журнале.
+
+Изменение локализовано только в data-layer гейтинге событий (без правок VPN state-machine/туннельного пайплайна), чтобы минимизировать риск регрессий подключения
+
+добавил безопасный rollback-механизм для one-shot panic-rotation в обеих версиях (exclavemod/exclavetheme): новый action vpnSecurityCancelPanicRotate в VPN Security UI, чтобы пользователь мог снять pending panic-state до следующей сборки конфига, не отключая весь hardening-профиль.
+
+Добавил централизованный ключ VPN_SECURITY_CANCEL_PANIC_ROTATE в Key.smali обеих сборок (без строкового хардкода в обработчиках).
+
+Обновил SettingsPreferenceFragment:
+
+в refresh-логике кнопка cancel автоматически enabled только когда getVpnSecurityPanicRotateNow()==true (анти-regression против no-op кликов);
+
+в onPreferenceTreeClick(...) добавлена обработка VPN_SECURITY_CANCEL_PANIC_ROTATE: если panic armed, вызывается setVpnSecurityPanicRotateNow(false), затем выполняется reloadVpnSecurityScreen()
+
+ сделал anti-regression рефакторинг data-layer в обеих версиях (exclavemod/exclavetheme): добавил единый helper clearVpnSecurityIncidentMetadata() для централизованного сброса vpnSecurityIncidentCount, vpnSecurityLastIncidentReason, vpnSecurityLastIncidentTimestamp.
+
+Перевёл на этот helper дублирующиеся reset-пути:
+
+setVpnSecurityRuntimeHardeningEnabled(false)
+
+resetVpnSecurityIncidentCount()
+Это убирает расхождение между reset-ветками и снижает риск будущих регрессий при изменении инцидентной метадаты
+___________________________
+
+Проанализируй, все ли эти шаги созданного тобою плана выполнены на уровне кода smali/xml в exclavemod/exclavetheme и что осталось доделать.
+
+Продолжай доделывать остальные шаги по изначальному плану в обоих версиях - exclavemod и exclavetheme.
+
+При добавлении нового кода и изменении существующего кода - проверяй, чтобы он не ломал весь остальной код приложения и работу функций, и не возникало регрессий.
