@@ -2269,6 +2269,112 @@ setVpnSecurityRuntimeHardeningEnabled(false)
 
 resetVpnSecurityIncidentCount()
 Это убирает расхождение между reset-ветками и снижает риск будущих регрессий при изменении инцидентной метадаты
+
+закрыл ещё один важный пункт Android hardening для обеих сборок:
+
+добавил android:usesCleartextTraffic="false" в AndroidManifest.xml;
+
+перевёл network_security_config.xml на cleartextTrafficPermitted="false" (убран cleartext fallback
+
+не в hot-path туннеля, а через безопасный data/UI-слой: добавил новый блок наблюдаемости «Последнее security-событие» + action «Сбросить последнее security-событие» в global_preferences.xml.
+
+Добавил централизованные ключи в Key.smali для нового контура (VPN_SECURITY_LAST_EVENT, VPN_SECURITY_LAST_EVENT_VIEW, VPN_SECURITY_RESET_LAST_EVENT) в обеих сборках, чтобы не было строкового хардкода по коду.
+
+Расширил DataStore в обеих версиях новыми методами get/set/clearVpnSecurityLastEvent, и включил очистку этого поля в централизованный reset метаданных инцидента (clearVpnSecurityIncidentMetadata) — это убирает «залипание» старого события после reset/rollback сценариев
+
+добавил в UI обеих сборок отдельное read-only поле метки времени последнего security-события (vpnSecurityLastEventTimestampView) рядом с текущим lastEvent и reset-действием.
+
+Добавил централизованные ключи в Key.smali для timestamp-поля (VPN_SECURITY_LAST_EVENT_TIMESTAMP, VPN_SECURITY_LAST_EVENT_TIMESTAMP_VIEW) в exclavemod и exclavetheme.
+
+Расширил DataStore в обеих версиях:
+
+новый getter getVpnSecurityLastEventTimestamp();
+
+в setVpnSecurityLastEvent(String) теперь централизованно пишется timestamp (System.currentTimeMillis() для непустого события, 0 при очистке);
+
+в clearVpnSecurityIncidentMetadata() добавлен сброс vpnSecurityLastEventTimestamp, чтобы состояние не «залипало».
+
+Обновил SettingsPreferenceFragment в обеих версиях:
+
+увеличил регистры метода (.locals 6) для безопасного форматирования нового summary;
+
+добавил вывод summary по timestamp (Метка времени события (UTC ms): ...) с fallback на нет
+
+добавил отдельный счётчик security-событий в разделе VPN Security:
+
+vpnSecurityEventCountView (read-only summary),
+
+vpnSecurityResetEventCount (action reset).
+
+Добавил централизованные ключи в Key.smali:
+
+VPN_SECURITY_EVENT_COUNT,
+
+VPN_SECURITY_EVENT_COUNT_VIEW,
+
+VPN_SECURITY_RESET_EVENT_COUNT.
+
+Расширил DataStore в exclavemod и exclavetheme:
+
+новый getter getVpnSecurityEventCount(),
+
+новый reset resetVpnSecurityEventCount(),
+
+в setVpnSecurityLastEvent(String) добавил инкремент счётчика только для непустого события,
+
+в clearVpnSecurityIncidentMetadata() добавил сброс vpnSecurityEventCount (анти-залипание состояния).
+
+Обновил SettingsPreferenceFragment в обеих версиях:
+
+вывод summary счётчика,
+
+enable/disable reset-кнопки по текущему значению,
+
+обработчик клика vpnSecurityResetEventCount с resetVpnSecurityEventCount() + reloadVpnSecurityScreen()
+
+добавил в VPN Security read-only поле метки времени последнего leak-test (vpnSecurityLastLeakTestTimestampView) рядом со статусом leak-test, чтобы состояние было аудируемым, а не только бинарным/текстовым.
+
+Добавил централизованные ключи в Key.smali:
+
+VPN_SECURITY_LAST_LEAK_TEST_TIMESTAMP
+
+VPN_SECURITY_LAST_LEAK_TEST_TIMESTAMP_VIEW.
+
+Расширил DataStore в обеих сборках:
+
+новый getter getVpnSecurityLastLeakTestTimestamp(),
+
+setVpnSecurityLastLeakTestStatus(String) теперь централизованно пишет timestamp (now для непустого статуса, 0 при очистке),
+
+resetVpnSecurityIncidentCount() перевёл на clearVpnSecurityLastLeakTestStatus() (без raw-put строки), чтобы не обходить централизованную логику и избежать рассинхрона timestamp/status.
+
+Обновил SettingsPreferenceFragment обеих версий:
+
+вывод summary для leak-test timestamp с fallback нет,
+
+без изменения критичных участков VPN state-machine/туннеля (только UI/data-layer
+
+добавил единый action в VPN Security: vpnSecurityResetAllMetadata (“Сбросить всю security-метадату”), чтобы не делать несколько ручных reset-действий по отдельности.
+
+Добавил централизованную константу VPN_SECURITY_RESET_ALL_METADATA в Key.smali для обеих сборок (без строкового хардкода в обработчиках).
+
+Подключил обработку в SettingsPreferenceFragment обеих версий:
+
+resetVpnSecurityIncidentCount()
+
+clearVpnSecurityLastEvent()
+
+resetVpnSecurityEventCount()
+
+reloadVpnSecurityScreen()
+
+Это даёт детерминированный one-click reset метаданных без изменений VPN state-machine/hot-path
+
+сделал anti-regression рефакторинг reset-пути в обеих версиях:
+
+добавил централизованный метод resetVpnSecurityAllMetadata() в DataStore, который агрегирует полный сброс security-метадаты (инциденты + последнее событие + счётчик событий).
+
+перевёл обработчик UI-действия vpnSecurityResetAllMetadata в SettingsPreferenceFragment на этот единый DataStore helper, вместо трёх разрозненных вызовов — меньше шанс дрейфа логики и регрессий в будущем
 ___________________________
 
 Проанализируй, все ли эти шаги созданного тобою плана выполнены на уровне кода smali/xml в exclavemod/exclavetheme и что осталось доделать.
