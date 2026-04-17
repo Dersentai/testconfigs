@@ -2375,6 +2375,80 @@ reloadVpnSecurityScreen()
 добавил централизованный метод resetVpnSecurityAllMetadata() в DataStore, который агрегирует полный сброс security-метадаты (инциденты + последнее событие + счётчик событий).
 
 перевёл обработчик UI-действия vpnSecurityResetAllMetadata в SettingsPreferenceFragment на этот единый DataStore helper, вместо трёх разрозненных вызовов — меньше шанс дрейфа логики и регрессий в будущем
+
+доделал следующий оставшийся anti-regression шаг в обеих версиях: добавил compatibility-mode gating в runtime-композиты DataStore, чтобы в совместимом режиме (когда strict-force/leak-test не активны) не форсились части hardening-политики. Затронуты: block-on-disconnect, local SOCKS auth, local HTTP auth, strict DNS no-fallback, random local port
+
+Исправил регрессию в пресете «Применить рекомендованный профиль»: теперь в обеих версиях (exclavemod и exclavetheme) рекомендованный профиль явно включает runtime hardening, оставляет strict mode выключенным, и переводит compatibility mode в false, чтобы recommended-профиль действительно применял усиленные runtime-политики, а не «смягчал» их автоматически. 
+
+Legacy-путь не ломал: профиль отката по‑прежнему оставляет compatibilityMode=true (rollback-поведение сохранено). 
+
+Обновил текст в UI для пункта recommended-профиля (убрал формулировку «совместимый»), чтобы описание соответствовало фактическому поведению после фикса. Сделано в обеих версиях
+
+ закрыл ещё один anti-regression шаг в обеих версиях (exclavemod + exclavetheme): добавил инварианты в data-layer для связки Strict mode ↔ Compatibility mode. Теперь при включении compatibilityMode автоматически сбрасывается strictMode, и наоборот — при включении strictMode автоматически сбрасывается compatibilityMode. Это убирает конфликтные состояния флагов в prefs и делает effective-policy детерминированной. 
+
+Усилил UI-гейтинг в SettingsPreferenceFragment (обе версии): клики по VPN_SECURITY_STRICT_MODE и VPN_SECURITY_COMPATIBILITY_MODE теперь принудительно проходят через централизованные DataStore-setter’ы с немедленным reloadVpnSecurityScreen(). Это исключает «сырой prefs-only» путь и синхронизирует UI с data-layer инвариантами без ручного переоткрытия экрана
+
+Продолжил план с упором на анти-регрессию в UI: в обработчике onPreferenceTreeClick(...) для VPN_SECURITY_STRICT_MODE и VPN_SECURITY_COMPATIBILITY_MODE теперь берётся фактическое состояние нажатого Switch через TwoStatePreference.isChecked() (если это действительно TwoStatePreference), а не только чтение из DataStore. Это снижает риск рассинхронизации/“устаревшего” значения в момент клика. 
+
+Сохранил безопасный fallback (если Preference не TwoStatePreference) — остаётся чтение из DataStore, затем централизованный setter и reloadVpnSecurityScreen(). То есть текущая логика не ломается, а становится устойчивее к timing/ordering edge-cases
+
+Доделал более жёсткий и безопасный фикс под verifier: вынес оба timestamp-блока из updateVpnSecurityIncidentCountSummary() в отдельные helper-методы, чтобы убрать смешивание wide/reference-регистров в большом методе с ветвлениями. Теперь основной метод только вызывает helpers для:
+
+updateVpnSecurityLastEventTimestampSummary()
+
+updateVpnSecurityLastLeakTestTimestampSummary()
+Это сделано в обеих версиях (exclavemod, exclavetheme). 
+
+Добавлены новые изолированные helper-методы с простым локальным потоком регистров и без «грязных» merge-path внутри большого UI-метода. Это снижает риск VerifyError на ART/Dalvik при входе в настройки. 
+
+Остальной код по плану (runtime/security-контур) в этом коммите не менял — фикc локализован на уровне UI-summary метода, чтобы не задеть уже добавленную функциональность
+
+улучшил наблюдаемость VPN Security в UI.
+В SettingsPreferenceFragment для обеих сборок (exclavemod / exclavetheme) в строку Runtime-политика добавил явный вывод strictPref и compatPref рядом с уже существующими effective-флагами (kill, dns, auth, randomPort, и т.д.). Это помогает видеть не только effective-runtime состояние, но и текущие пользовательские pref-состояния при расследовании регрессий/несоответствий. 
+
+Логика работы VPN и state-machine не менялась — правка только в UI-summary сборке строки (минимальный риск ломать существующий функционал). 
+
+Testing
+
+✅ cd /workspace/exclave && nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6276,6325p' && nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6491,6540p' && git diff --stat
+
+✅ cd /workspace/exclave && git add exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali && git commit -m 'Expose strict/compat prefs in VPN runtime policy summary'
+
+✅ cd /workspace/exclave && git status --short && git log --oneline -n 3
+
+Коммит: cd058d8
+PR через make_pr после коммита создан.
+
+
+файлов (6)
+
+global_preferences.xml
+exclavemod/res/xml/global_preferences.xml
++1
+-1
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++73
+-17
+
+SettingsPreferenceFragment.smali
++212
+-84
+
+global_preferences.xml
+exclavetheme/res/xml/global_preferences.xml
++1
+-1
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++73
+-17
+
+SettingsPreferenceFragment.smali
++212
+-84
 ___________________________
 
 Проанализируй, все ли эти шаги созданного тобою плана выполнены на уровне кода smali/xml в exclavemod/exclavetheme и что осталось доделать.
