@@ -2643,8 +2643,135 @@ SettingsPreferenceFragment.smali
 +44
 -0
 
+исправил обработку двух security-тумблеров в onPreferenceTreeClick для обеих сборок (exclavemod и exclavetheme), чтобы значение бралось из фактического состояния TwoStatePreference.isChecked(), а не только из чтения DataStore. Это закрывает риск no-op/рассинхронизации при переключении Intrusion response и Auto leak-test on incident.
 
-___________________________
+Сохранил fail-safe fallback: если Preference не является TwoStatePreference, код по-прежнему читает текущее значение из DataStore и применяет его — то есть совместимость с legacy-путём не ломается
+
+Доделал ещё один runtime-hardening шаг в обеих версиях (exclavemod и exclavetheme): в сборке SOCKS inbound теперь при активном strict forced policy + local proxy auth принудительно отключается UDP-associate (udp=false) и пишется security event. Это уменьшает поверхность утечек/злоупотребления локальным SOCKS при строгом профиле, сохраняя совместимость вне strict режима
+
+добавил немедленное применение runtime-политик для ключевых действий VPN Security в обеих версиях (exclavemod и exclavetheme): теперь после apply recommended/legacy profile, а также после переключения strict mode, compatibility mode, intrusion response, auto leak-test on incident вызывается needReload(...), а не только обновление UI-сводки. Это уменьшает окно, когда UI уже изменён, а runtime ещё работает по старой политике
+
+закрыл ещё один источник «отложенного применения» security-политик: добавил централизованный helper isVpnSecurityRuntimeReloadToggleKey(...) и подключил его в onPreferenceTreeClick(...) как fallback-ветку. Теперь для оставшихся runtime-влияющих VPN Security-тумблеров автоматически вызываются needReload(...) + reloadVpnSecurityScreen(), если клик не перехвачен более ранними специальными ветками. Это сделано в обеих версиях (exclavemod и exclavetheme).
+
+В helper включены ключи, которые реально влияют на runtime-поведение: runtime hardening, local SOCKS/HTTP auth и auto-generate creds, rotation, random port, disable local API diagnostics, block-on-disconnect, strict DNS, disable DNS fallback, events, minimal telemetry
+
+исправил потенциальную регрессию в обработке VPN Security-тумблеров: раньше fallback-ветка могла сразу возвращать true и тем самым перехватывать клик до стандартной обработки Preference (что опасно для корректного обновления состояния switch). Теперь для runtime-ключей сначала вызывается super.onPreferenceTreeClick(...), и только если клик реально обработан, вызываются needReload(...) и reloadVpnSecurityScreen().
+
+Таким образом сохранена корректная штатная логика изменения значения preference + добавлен reload-сигнал без ломания поведения UI/настроек
+
+ исправил критичный edge-case в SettingsPreferenceFragment для двух переключателей VPN Security:
+VPN_SECURITY_INTRUSION_RESPONSE_ENABLED и VPN_SECURITY_AUTO_LEAK_TEST_ON_INCIDENT.
+Теперь значение берётся из фактического состояния TwoStatePreference.isChecked(), а не перечитывается старое из DataStore перед записью. Это устраняет риск, когда клик по switch не менял состояние как ожидалось. Сделано симметрично в exclavemod и exclavetheme.
+
+Логика reload после изменения этих флагов сохранена (через needReload(...) + reloadVpnSecurityScreen()), то есть поведение стало одновременно корректным по состоянию переключателя и безопасным по применению runtime-политик
+
+исправил ещё один реальный источник регрессий в VPN Security UI: для VPN_SECURITY_INTRUSION_RESPONSE_ENABLED и VPN_SECURITY_AUTO_LEAK_TEST_ON_INCIDENT теперь берётся фактическое состояние switch через TwoStatePreference.isChecked() (с fallback на DataStore), а не старое значение из хранилища. Это синхронизирует UI и записываемое runtime-состояние в обеих версиях (exclavemod / exclavetheme).
+
+Сохранён существующий безопасный путь применения: после записи этих флагов по-прежнему вызываются needReload(...) и reloadVpnSecurityScreen(), чтобы изменения применялись в runtime и сразу отражались в UI
+
+закрыл важный runtime-gap: VPN_SECURITY_RUNTIME_HARDENING_ENABLED теперь обрабатывается отдельной явной веткой в onPreferenceTreeClick(...) (обе версии), где значение берётся из TwoStatePreference.isChecked() и применяется через DataStore.setVpnSecurityRuntimeHardeningEnabled(...) с последующим needReload(...) + reloadVpnSecurityScreen(). Это гарантирует выполнение всех сайд-эффектов setter’а, а не только «сырое» сохранение boolean в prefs.
+
+Дополнительно убрал VPN_SECURITY_RUNTIME_HARDENING_ENABLED из generic helper-пути isVpnSecurityRuntimeReloadToggleKey(...), чтобы не было конкурирующих путей обработки и логика оставалась однозначной (runtime hardening — только через dedicated branch
+
+ усилил strict-политику на уровне runtime-конфиг-билда: теперь отключение SOCKS UDP-associate в локальном inbound срабатывает всегда при getVpnSecurityRuntimeStrictModeForceEnabled(), без дополнительной зависимости от getVpnSecurityRuntimeLocalProxyAuthEnabled(). Это закрывает policy-gap, когда strict mode активен, но UDP мог оставаться включённым из-за доп. условия. Изменение внесено симметрично в exclavemod и exclavetheme.
+
+Событие наблюдаемости сохранено: при применении строгой политики по-прежнему пишется VPN security event: SOCKS UDP associate disabled by strict-mode policy
+
+Усилил гигиену профилей безопасности в DataStore:
+в applyVpnSecurityRecommendedProfile() и applyVpnSecurityLegacyProfile() теперь не только выставляются флаги, но и очищаются ручные локальные креды (SOCKS/HTTP username+password), чтобы не оставлять устаревшие/чувствительные значения между профилями.
+
+Также заменил частичный сброс (clearVpnSecurityLastLeakTestStatus + resetVpnSecurityIncidentCount) на полный resetVpnSecurityAllMetadata(), чтобы переходы профилей давали консистентное состояние метаданных/событий в одном месте
+
+Доработал DataStore в обеих сборках (exclavemod и exclavetheme):
+при отключении локальной аутентификации для SOCKS (setVpnSecurityLocalProxyAuthEnabled(false)) теперь автоматически:
+
+очищаются ручные username/password,
+
+обратно включается auto-generate credentials.
+
+Аналогично для HTTP-прокси (setVpnSecurityLocalHttpProxyAuthEnabled(false)): очистка ручных кредов + включение автогенерации, чтобы не оставались старые секреты после выключения auth.
+
+Это уменьшает риск «залипания» чувствительных данных и делает профильную безопасность более предсказуемой при переключениях режимов
+
+Существенно расширил applyVpnSecurityLegacyProfile() в DataStore (и в exclavemod, и в exclavetheme): теперь legacy-профиль явно сбрасывает весь набор VPN Security toggle’ов, а не только hardening/intrusion-флаги.
+Добавлены явные reset’ы для:
+
+local SOCKS/HTTP auth,
+
+auto-generate creds для SOCKS/HTTP,
+
+rotate-on-connect,
+
+randomize local port,
+
+disable local API diagnostics,
+
+block traffic on disconnect,
+
+strict DNS + disable DNS fallback,
+
+events,
+
+minimal telemetry,
+
+intrusion response + auto leak-test,
+
+panic/leak one-shot флагов. 
+
+Сохранил и дополнил гигиену rollback: очищаются ручные SOCKS/HTTP креды и вызывается resetVpnSecurityAllMetadata(), чтобы после отката не оставалось stale security-state/метаданных. 
+
+Это ускоряет закрытие плана именно «до конца» по профилям: rollback теперь действительно полный и предсказуемый, а не частичный
+
+Внёс ещё один важный крупный шаг по профилям безопасности: в applyVpnSecurityRecommendedProfile() теперь включается strict mode = true (а compatibility остаётся false), чтобы «Рекомендованный профиль» действительно соответствовал строгому профилю, а не мягкому режиму. Сделано симметрично для exclavemod и exclavetheme.
+
+Это прямо закрывает логический разрыв плана: recommended-профиль теперь совпадает с ожидаемой security-семантикой (hardening + strict), вместо прежнего hardening + non-strict
+
+Updated both SettingsPreferenceFragment smali variants so VPN security toggles are now handled by applyVpnSecurityRuntimeReloadToggle(...) directly from onPreferenceTreeClick, and successful handling now always triggers needReload(...) plus reloadVpnSecurityScreen() before returning handled=true. 
+
+Replaced key-only detection with explicit per-key persistence logic that writes each VPN security toggle state to the corresponding DataStore setter in both builds (exclavemod and exclavetheme). 
+
+Added extractTwoStatePreferenceValue(...) helper in both files to safely read TwoStatePreference.isChecked() and default to false when the preference is not two-state. 
+
+Committed the changes as dff2a73 and created the PR metadata via make_pr with title: “Fix VPN security settings toggles to persist and reload correctly”.
+
+Testing
+
+✅ git diff --check
+
+✅ rg "isVpnSecurityRuntimeReloadToggleKey|applyVpnSecurityRuntimeReloadToggle|extractTwoStatePreferenceValue" exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali
+
+
+файлов (6)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++79
+-5
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++15
+-0
+
+SettingsPreferenceFragment.smali
++367
+-0
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++79
+-5
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++15
+-0
+
+SettingsPreferenceFragment.smali
++367
+-0
+
+__________________________
 
 Проанализируй, все ли эти шаги созданного тобою плана выполнены на уровне кода smali/xml в exclavemod/exclavetheme и что осталось доделать.
 
