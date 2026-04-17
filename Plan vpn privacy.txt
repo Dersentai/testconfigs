@@ -2771,6 +2771,62 @@ SettingsPreferenceFragment.smali
 +367
 -0
 
+Продолжил план крупной runtime-правкой в обеих сборках (exclavemod и exclavetheme): после выбора случайного локального SOCKS-порта в ConfigBuilderKt теперь порт сразу сохраняется в DataStore через setSocksPort(...), чтобы остальной runtime (включая сервисную часть) работал с тем же актуальным портом и не было рассинхронизации.
+
+Аналогично для HTTP inbound: после runtime-резолва порта добавлено сохранение через setHttpPort(...) в DataStore, что закрывает риск регрессий, когда конфиг уже на новом порту, а другие части приложения ещё читают старое значение
+
+Продолжил план не “косметикой”, а следующей runtime-интеграцией в обеих ветках (exclavemod + exclavetheme): в applyVpnSecurityDnsLocalFallbackPolicy(...) добавил security-event, когда strict DNS policy принудительно отключает fallback DNS. Это улучшает наблюдаемость и аудит действий политики без изменения fail-safe поведения.
+
+Добавил incident-hook в resolveVpnSecurityLocalInboundPort(...): если рандомизация локального порта падает по исключению, теперь фиксируется security-incident и используется безопасный fallback на настроенный порт (поведение не ломается, но событие теперь прозрачно для incident pipeline
+
+Убрал из ConfigBuilderKt (в exclavemod и exclavetheme) добавленные ранее telemetry-вызовы в двух критичных helper-методах, чтобы вернуть им поведение “без сайд-эффектов” во время сборки runtime-конфига:
+applyVpnSecurityDnsLocalFallbackPolicy(...) и resolveVpnSecurityLocalInboundPort(...).
+
+Вернул .locals в этих методах с 2 обратно на 1 после удаления временных строковых регистров, чтобы не оставлять лишних модификаций в smali hot-path
+
+расширил summary у vpnSecurityRuntimePolicyView в SettingsPreferenceFragment для exclavemod и exclavetheme. Теперь там дополнительно показываются:
+
+socksAuto, socksManual
+
+httpAuto, httpManual
+
+incidentCount, eventCount
+Это даёт больше видимости по реальному состоянию security-профиля и источнику credentials без изменения сетевого рантайма
+
+добавил явное управление доступностью полей ручных credentials в SettingsPreferenceFragment для exclavemod и exclavetheme.
+Теперь поля vpnSecurityLocalProxyUsername/password и vpnSecurityLocalHttpProxyUsername/password включаются только когда:
+
+соответствующий auth включен,
+
+автогенерация для этого типа прокси выключена.
+Это убирает конфликт состояний “ручной ввод + автогенерация” и снижает риск ошибочной конфигурации
+
+Продолжил план крупной правкой в UI-слое VPN Security (без трогания runtime-конфига подключения): добавил контекстные summary для ручного ввода credentials SOCKS/HTTP в SettingsPreferenceFragment (mod + theme).
+Теперь для ручных полей явно показывается причина состояния:
+
+auth выключен,
+
+включена автогенерация,
+
+ручной ввод активен.
+Это снижает риск ложной конфигурации и помогает диагностике без влияния на запуск VPN-туннеля
+
+убрал опасный подход с setSummary(...) для EditTextPreference (у которых уже есть SummaryProvider) и вместо этого добавил отдельные безопасные Preference-строки статуса в VPN Security:
+
+vpnSecurityLocalProxyCredentialsModeView
+
+vpnSecurityLocalHttpProxyCredentialsModeView
+Они не используют SummaryProvider, поэтому не вызывают IllegalStateException.
+
+В SettingsPreferenceFragment.updateVpnSecurityIncidentCountSummary() добавил обновление summary только для этих новых plain Preference на основе runtime-флагов DataStore:
+
+auth disabled
+
+auto-generated credentials
+
+manual credentials
+То есть диагностика сохранена, но без конфликтов с provider-managed полями и без трогания EditTextPreference summary напрямую
+
 __________________________
 
 Проанализируй, все ли эти шаги созданного тобою плана выполнены на уровне кода smali/xml в exclavemod/exclavetheme и что осталось доделать.
