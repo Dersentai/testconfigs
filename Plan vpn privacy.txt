@@ -2449,6 +2449,201 @@ exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
 SettingsPreferenceFragment.smali
 +212
 -84
+
+Продолжил закрывать оставшиеся пункты плана по observability/anomaly journal: в reportVpnSecurityIncident(...) теперь инцидент не только пишет Last incident reason, но и сразу записывается в общий журнал событий через setVpnSecurityLastEvent(...) (это обновляет и Last event, и счётчик событий). 
+
+доработал логику инцидентов в обеих версиях (exclavemod и exclavetheme) с упором на отсутствие регрессий: теперь reportVpnSecurityIncident(...) пишет в Last event только если runtime-политика событий реально активна (getVpnSecurityRuntimeEventsEnabled()), а не безусловно. Это сохраняет сбор инцидент-метаданных, но убирает лишнее «раздувание» журнала событий/счётчика при выключенных events-политиках.
+
+Симметрия между сборками сохранена: одинаковая guarded-логика внесена в обе ветки smali, чтобы поведение не расходилось между mod и theme
+
+закрыл важный runtime-gap: для действий в разделе VPN Security, которые должны применяться сразу, добавил явный запрос needReload(...) после изменения флагов (Leak test start, Leak test reset при running, Panic rotate now, Cancel panic rotate) — в обеих версиях приложения (exclavemod и exclavetheme). Это снижает риск «отложенного применения» до случайного реконнекта и уменьшает вероятность регрессий по поведению runtime-политик
+
+закрыл ещё один потенциальный regression-case в runtime: в ConfigBuilderKt добавлен snapshot-флаг vpnSecurityPanicRotateAtBuildStart, чтобы фиксировать состояние panic-rotate в начале сборки конфига, а не только в конце.
+
+Добавлен helper captureVpnSecurityPanicRotateAtBuildStart(), и он вызывается в начале buildV2RayConfig(...) в обеих сборках. Это гарантирует корректный lifecycle panic-флага на весь build-cycle.
+
+Переписан clearVpnSecurityPanicRotateNowAfterBuild() так, чтобы panic-флаг очищался только если он уже был armed на старте build; при этом snapshot всегда сбрасывается после завершения. Это предотвращает потерю incident-triggered panic rotate, который может быть выставлен во время текущей сборки и должен дожить до следующего цикла применения
+
+закрыл аналогичный lifecycle-edge-case для Leak Test (как ранее для panic rotate): добавил build-start snapshot vpnSecurityLeakTestAtBuildStart в ConfigBuilderKt для обеих версий, чтобы корректно различать «флаг был включён до сборки» и «флаг выставлен во время текущей сборки».
+
+Расширил captureVpnSecurityPanicRotateAtBuildStart() — теперь он захватывает не только panic-rotate, но и leak-test state через getVpnSecurityLeakTest(); вызов на старте buildV2RayConfig(...) сохранён, поэтому snapshot фиксируется в начале build-cycle в обеих сборках.
+
+Обновил clearVpnSecurityLeakTestAfterBuild() так, чтобы leak test сбрасывался только если он был armed на старте текущей сборки; snapshot в конце всегда очищается. Это уменьшает риск регрессии, когда incident-response выставляет leak test в процессе сборки и он случайно «съедается» в этом же цикле вместо следующего применения
+
+сделал incident-response путь более безопасным/идемпотентным: в triggerVpnSecurityIncidentResponse() теперь записи panicRotateNow=true и leakTest=true выполняются только если флаги ещё не были выставлены. Это уменьшает лишние повторные записи в prefs при серии инцидентов и снижает риск побочных регрессий от churn по состоянию. Изменение внесено симметрично в exclavemod и exclavetheme.
+
+Сохранил все существующие policy-gates: hardening должен быть включён, intrusion response должен быть включён, и auto leak-test on incident должен быть включён для автоматического arm leak-test — логика не ослаблена, только сделана менее «шумной» по повторным записям
+
+усилил наблюдаемость без ослабления приватности: в triggerVpnSecurityIncidentResponse() теперь есть явная фиксация в журнале событий, когда incident-response реально вооружил runtime-действия (panic rotate/leak test). Запись идёт только если action действительно был выставлен в этом проходе и только при включённых runtime events.
+
+Сохранил idempotent-поведение: перед установкой panicRotateNow и leakTest метод сначала проверяет текущий state и не перезаписывает уже armed-флаги (уменьшает churn и риск побочных эффектов при сериях инцидентов).
+
+Все существующие policy-гейты сохранены: hardening + intrusion response + auto leak test + runtime events для журналирования — т.е. логика не ломает текущие ограничения и не включает лишнюю телеметрию при выключенном events-флаге
+
+добавил более прозрачный контроль runtime-состояния: в DataStore обеих версий добавлен централизованный getter getVpnSecurityRuntimeActionsArmed(), который показывает, вооружены ли сейчас runtime-действия безопасности (panic rotate или runtime leak test).
+
+Подключил этот статус в UI: в runtime policy summary на экране VPN Security теперь выводится дополнительный индикатор armedActions=<true|false>, чтобы сразу видеть, активированы ли аварийные security-действия после инцидентов. Сделано симметрично в exclavemod и exclavetheme.
+
+Изменение read-only по сути (статус + summary), поэтому риск регрессий минимален: маршрутизация/билдер конфигов не менялись в этом шаге.
+
+Коммит: 6479e12 Expose armed VPN security actions in runtime policy summary. PR через make_pr создан
+
+добавил более прозрачный контроль runtime-состояния: в DataStore обеих версий добавлен централизованный getter getVpnSecurityRuntimeActionsArmed(), который показывает, вооружены ли сейчас runtime-действия безопасности (panic rotate или runtime leak test).
+
+Подключил этот статус в UI: в runtime policy summary на экране VPN Security теперь выводится дополнительный индикатор armedActions=<true|false>, чтобы сразу видеть, активированы ли аварийные security-действия после инцидентов
+
+поправил наблюдаемость armedActions: в getVpnSecurityRuntimeActionsArmed() обеих версий теперь используется сырой флаг leak test (getVpnSecurityLeakTest()), а не runtime-gated leak-status. Это корректнее отражает «действие вооружено/ожидает применения», даже если в текущий момент policy-gate временно неактивен.
+
+Логика осталась безопасной и простой: armedActions = panicRotateNow || leakTest (one-shot pending state), без изменения runtime-конфиг билда и маршрутизации
+
+доработал incident-response статус: при автоматическом вооружении leak-test через triggerVpnSecurityIncidentResponse() теперь сразу выставляется lastLeakTestStatus = "running" (в обеих версиях). Это убирает окно, где action уже armed, а UI/status ещё показывает устаревшее состояние.
+
+Изменение безопасное и локальное: добавлена только синхронизация статуса после setVpnSecurityLeakTest(true), без правок маршрутизации/билдера конфигов
+
+добавил ещё один слой runtime-наблюдаемости без изменения сетевой логики: в DataStore обеих версий появился getter getVpnSecurityRuntimeIncidentReloadRequired(), который централизованно показывает, нужен ли incident-driven reload (intrusion response ON + armed actions ON).
+
+Подключил этот индикатор в UI: runtime policy summary на экране VPN Security теперь выводит incidentReload=<bool> рядом с armedActions, чтобы состояние incident-response было видно сразу, без чтения логов. Сделано симметрично для mod и theme.
+
+Изменения read-only/summary-уровня, поэтому риск регрессий в runtime-билде маршрутов минимален.
+
+Коммит: a0c78f4 Add incident-reload indicator to VPN security runtime summary. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "getVpnSecurityRuntimeIncidentReloadRequired\\(\\)Z|incidentReload=" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1008,1038p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1008,1038p'; nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6418,6446p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6633,6661p'
+
+✅ git status --short && git log --oneline -n 2
+
+
+файлов (6)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++105
+-4
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++42
+-0
+
+SettingsPreferenceFragment.smali
++32
+-0
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++105
+-4
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++42
+-0
+
+SettingsPreferenceFragment.smali
++32
+-0
+
+добавил safety-guard против лишних reload-событий: в triggerVpnSecurityIncidentResponse() reload теперь выполняется только если VPN сервис реально запущен (SagerNet.Companion.getStarted() == true). Изменение сделано в обеих версиях (exclavemod, exclavetheme).
+
+Это уменьшает риск побочных no-op broadcast’ов и возможного churn, при этом не меняет policy-логику arming panic/leak действий
+
+закрыл статусный edge-case для Leak Test: в setVpnSecurityLeakTest(Z) обеих версий теперь при выключении теста (false) и текущем статусе "running" статус переводится в "aborted" вместо зависания в ложном running состоянии.
+
+Поведение при включении leak-test не ломал: как и раньше, при true очищается старый статус перед новым запуском.
+
+Это улучшает консистентность UI/метаданных и снижает риск регрессий в диагностике инцидентов (статус теперь лучше отражает реальное состояние).
+
+Коммит: 6892a3f Set leak-test status to aborted when running test is canceled. PR через make_pr создан.
+
+Testing
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1762,1807p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali | sed -n '1762,1807p'
+
+✅ rg -n "setVpnSecurityLeakTest\\(Z\\)V|getVpnSecurityLastLeakTestStatus\\(\\)Ljava/lang/String;|setVpnSecurityLastLeakTestStatus\\(Ljava/lang/String;\\)V|running|aborted" exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
+
+✅ git status --short && git log --oneline -n 2
+
+
+файлов (6)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++131
+-5
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++42
+-0
+
+SettingsPreferenceFragment.smali
++32
+-0
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++131
+-5
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++42
+-0
+
+SettingsPreferenceFragment.smali
++32
+-0
+
+улучшил наблюдаемость без изменения runtime-маршрутизации: в VPN security runtime summary добавил leakStatus=<...> (берётся из getVpnSecurityLastLeakTestStatus()), чтобы сразу видеть не только флаг leakTest, но и фактический статус (running/aborted/...). Сделано симметрично в exclavemod и exclavetheme.
+
+Это дополняет предыдущие шаги по incident-response и уменьшает риск «слепых зон» при отладке/аудите состояния VPN Security.
+
+Коммит: a512ffb Show leak-test status in VPN runtime policy summary. PR через make_pr создан.
+
+Testing
+
+✅ rg -n "leakStatus=|getVpnSecurityLastLeakTestStatus\\(\\)Ljava/lang/String;" exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali
+
+✅ nl -ba exclavemod/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6390,6415p'; nl -ba exclavetheme/smali/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.smali | sed -n '6605,6630p'
+
+✅ git status --short && git log --oneline -n 2
+
+
+файлов (6)
+
+DataStore.smali
+exclavemod/smali/io/nekohasekai/sagernet/database/DataStore.smali
++131
+-5
+
+ConfigBuilderKt.smali
+exclavemod/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++42
+-0
+
+SettingsPreferenceFragment.smali
++44
+-0
+
+DataStore.smali
+exclavetheme/smali/io/nekohasekai/sagernet/database/DataStore.smali
++131
+-5
+
+ConfigBuilderKt.smali
+exclavetheme/smali/io/nekohasekai/sagernet/fmt/ConfigBuilderKt.smali
++42
+-0
+
+SettingsPreferenceFragment.smali
++44
+-0
+
+
 ___________________________
 
 Проанализируй, все ли эти шаги созданного тобою плана выполнены на уровне кода smali/xml в exclavemod/exclavetheme и что осталось доделать.
